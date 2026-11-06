@@ -40,5 +40,5 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/*.dmg
+          files: build/**/*.dmg
           generate_release_notes: true
