@@ -61,17 +61,6 @@ jobs:
     needs: build-macos
     runs-on: ubuntu-latest
     steps:
-      # The updater needs the tarball and manifest; install.sh is a Linux
-      # installer script and SHA256SUMS is for manual checksums — both are
-      # noise on a macOS-only release.
-      - name: Prune unneeded assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete-asset "$GITHUB_REF_NAME" install.sh --repo "$GITHUB_REPOSITORY" -y || true
-          gh release delete-asset "$GITHUB_REF_NAME" SHA256SUMS --repo "$GITHUB_REPOSITORY" -y || true
-
-      - name: Publish the release
-        env:
+      - env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
