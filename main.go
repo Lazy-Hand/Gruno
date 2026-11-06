@@ -4,10 +4,13 @@ package main
 // collections on disk, edited live and sent over Go's HTTP stack.
 
 import (
-	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
 	"log"
 	"os"
+
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/updater"
+	updaterui "github.com/egoist/mygo/plugins/updater/native"
+	"github.com/egoist/mygo/ui"
 )
 
 func main() {
@@ -24,9 +27,23 @@ func main() {
 
 	a := newApp()
 	a.restoreLast()
+	// Sparkle-style update window in native UI: background checks daily,
+	// "Check for Updates…" in the app menu. A no-op in dev builds.
+	mygo.Use(updaterui.Plugin)
 	mygo.App.WhenReady(func() {
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-			{Role: mygo.RoleAppMenu},
+			{Label: "Gruno", Submenu: []*mygo.MenuItem{
+				{Role: mygo.RoleAbout},
+				updater.MenuItem(),
+				mygo.Separator(),
+				{Role: mygo.RoleServices},
+				mygo.Separator(),
+				{Role: mygo.RoleHide},
+				{Role: mygo.RoleHideOthers},
+				{Role: mygo.RoleUnhide},
+				mygo.Separator(),
+				{Role: mygo.RoleQuit},
+			}},
 			{Role: mygo.RoleFileMenu},
 			{Role: mygo.RoleEditMenu},
 			{Role: mygo.RoleWindowMenu},
