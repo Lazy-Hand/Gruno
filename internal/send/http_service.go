@@ -1,4 +1,4 @@
-package main
+package send
 
 // HTTPService executes requests built by prepareRequest and streams the
 // response head back through a channel before the bounded body read.
@@ -27,17 +27,17 @@ type HTTPService struct {
 }
 
 // newHTTPService builds the service with in-memory dependencies only.
-func newHTTPService() *HTTPService {
+func NewHTTPService() *HTTPService {
 	return &HTTPService{client: &http.Client{
 		Transport: netproxy.Transport(),
 		Timeout:   30 * time.Second,
 	}}
 }
 
-// send executes the request: onHead receives the head once, errors are
+// Send executes the request: onHead receives the head once, errors are
 // classified into ResponseResult, and only internal failures return a
 // Go error.
-func (s *HTTPService) send(ctx context.Context, input SendInput, onHead func(ResponseHead) error) (ResponseResult, error) {
+func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(ResponseHead) error) (ResponseResult, error) {
 	start := time.Now()
 	elapsed := func() float64 { return float64(time.Since(start)) / float64(time.Millisecond) }
 	fail := func(code ErrorCode, msg string) ResponseResult {

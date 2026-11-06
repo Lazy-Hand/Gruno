@@ -1,4 +1,4 @@
-package main
+package ui
 
 // store.go reads and writes a Bruno collection directory: bruno.json,
 // collection.bru, folder.bru per directory, environments/*.bru and one

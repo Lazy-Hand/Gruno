@@ -1,4 +1,4 @@
-package main
+package send
 
 // digest.go implements HTTP Digest access authentication (RFC 7616,
 // MD5, qop=auth) as a two-round exchange: the first request goes out

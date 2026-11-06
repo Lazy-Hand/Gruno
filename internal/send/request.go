@@ -1,4 +1,4 @@
-package main
+package send
 
 // Request construction: variable resolution, URL/query/path assembly,
 // headers, body and auth. Everything here is pure and unit-testable;

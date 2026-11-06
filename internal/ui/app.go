@@ -1,4 +1,4 @@
-package main
+package ui
 
 // app.go is the whole native UI: a Bruno workbench. The sidebar is a
 // tree of folders and requests; open requests are tabs, each editing a
@@ -23,13 +23,14 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 
 	"gruno/bru"
+	"gruno/internal/send"
 )
 
 // app is the workbench state.
 type app struct {
 	coll     *Collection
 	openErr  string
-	svc      *HTTPService
+	svc      *send.HTTPService
 	services ui.Services
 
 	open   []*BruRequest // open tabs, in order
@@ -41,7 +42,7 @@ type app struct {
 	filter string
 	envSel string
 
-	layoutHorizontal bool // true = side-by-side (Bruno default), false = top-bottom
+	layoutHorizontal bool   // true = side-by-side (Bruno default), false = top-bottom
 	themeMode        string // "system", "light", "dark"
 	recentDirs       []string
 	copyTimer        time.Time
@@ -81,10 +82,10 @@ type app struct {
 	// folderCtx is the folder path the last context action targets.
 	folderCtx string
 
-	folderOpen  map[string]bool
-	methodOpen  bool
-	revealAuth  map[string]bool
-	mdOpts      markdown.Options
+	folderOpen map[string]bool
+	methodOpen bool
+	revealAuth map[string]bool
+	mdOpts     markdown.Options
 }
 
 // tabState is per-open-request transient state: editor buffers, the
@@ -94,16 +95,16 @@ type tabState struct {
 
 	method string
 
-	bodyBuf    *editor.Buffer
-	bodyEd     *editor.State
-	gqlVarsBuf *editor.Buffer
-	gqlVarsEd  *editor.State
-	respBuf    *editor.Buffer
-	respEd     *editor.State
-	scriptPre  *editor.State
-	scriptPost *editor.State
-	testsEd    *editor.State
-	docsEd     *editor.State
+	bodyBuf     *editor.Buffer
+	bodyEd      *editor.State
+	gqlVarsBuf  *editor.Buffer
+	gqlVarsEd   *editor.State
+	respBuf     *editor.Buffer
+	respEd      *editor.State
+	scriptPre   *editor.State
+	scriptPost  *editor.State
+	testsEd     *editor.State
+	docsEd      *editor.State
 	docsPreview bool
 
 	respSection int
@@ -112,11 +113,11 @@ type tabState struct {
 	sending bool
 	cancel  context.CancelFunc
 	mu      sync.Mutex
-	head    *ResponseHead
-	result  *ResponseResult
+	head    *send.ResponseHead
+	result  *send.ResponseResult
 	err     error
 	sentAt  time.Time
-	sentReq *RequestData
+	sentReq *send.RequestData
 	// savedVers tracks each buffer's version at last flush to disk, so
 	// Modified()'s sticky flag doesn't re-save every frame.
 	savedVers map[*editor.Buffer]uint64
@@ -132,7 +133,7 @@ var authKinds = []string{"none", "inherit", "basic", "bearer", "apikey", "digest
 
 func newApp() *app {
 	return &app{
-		svc:              newHTTPService(),
+		svc:              send.NewHTTPService(),
 		tabs:             map[string]*tabState{},
 		folderOpen:       map[string]bool{},
 		revealAuth:       map[string]bool{},
@@ -399,8 +400,8 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	ts.cancel = cancel
 	svc := a.svc
 	go func() {
-		var head ResponseHead
-		res, err := svc.send(ctx, input, func(h ResponseHead) error {
+		var head send.ResponseHead
+		res, err := svc.Send(ctx, input, func(h send.ResponseHead) error {
 			head = h
 			ts.mu.Lock()
 			ts.head = &head
@@ -422,21 +423,21 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 }
 
 // respDisplayText picks the response body text for the editor.
-func respDisplayText(r *ResponseResult) string {
+func respDisplayText(r *send.ResponseResult) string {
 	return respDisplayTextFor(r, 0)
 }
 
-func respDisplayTextFor(r *ResponseResult, format int) string {
+func respDisplayTextFor(r *send.ResponseResult, format int) string {
 	if r == nil {
 		return ""
 	}
 	if r.ErrorCode != "" {
 		return r.ErrorMessage
 	}
-	if r.BodyKind == BodyKindBinary {
+	if r.BodyKind == send.BodyKindBinary {
 		return fmt.Sprintf("[binary body, %d bytes]", r.SizeBytes)
 	}
-	if r.BodyKind == BodyKindUnsupportedCharset {
+	if r.BodyKind == send.BodyKindUnsupportedCharset {
 		return fmt.Sprintf("[unsupported charset, %d bytes]", r.SizeBytes)
 	}
 	if format == 0 && len(r.BodyText) > 0 && len(r.BodyText) <= 1<<20 {
@@ -1766,7 +1767,7 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					headersLabel = fmt.Sprintf("Headers (%d)", len(head.Headers))
 				}
 				ui.Segmented(c, &ts.respSection, "Body", headersLabel, "Timeline")
-				if ts.respSection == 0 && res != nil && res.BodyKind == BodyKindText && res.ErrorCode == "" {
+				if ts.respSection == 0 && res != nil && res.BodyKind == send.BodyKindText && res.ErrorCode == "" {
 					if ui.Segmented(c, &ts.respFormat, "Pretty", "Raw").Changed() {
 						ts.mu.Lock()
 						ts.respBuf.Set(respDisplayTextFor(ts.result, ts.respFormat))

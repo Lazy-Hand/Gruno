@@ -1,4 +1,4 @@
-package main
+package ui
 
 // send.go adapts a bru.Request plus its collection scopes into the
 // SendInput that prepareRequest/HTTPService.send execute.
@@ -8,46 +8,47 @@ import (
 	"strings"
 
 	"gruno/bru"
+	"gruno/internal/send"
 )
 
 // dictPairs converts a bru dictionary to send-time pairs.
-func dictPairs(d bru.Dict) []Pair {
-	out := make([]Pair, 0, len(d))
+func dictPairs(d bru.Dict) []send.Pair {
+	out := make([]send.Pair, 0, len(d))
 	for _, e := range d {
-		out = append(out, Pair{Key: e.Key, Value: e.Value, Enabled: e.Enabled})
+		out = append(out, send.Pair{Key: e.Key, Value: e.Value, Enabled: e.Enabled})
 	}
 	return out
 }
 
 // bruAuthSpec maps a .bru auth selector + blocks to an AuthSpec.
 // "inherit" resolves to the collection/folder auth of the request.
-func bruAuthSpec(sel string, r *BruRequest, c *Collection) AuthSpec {
+func bruAuthSpec(sel string, r *BruRequest, c *Collection) send.AuthSpec {
 	req := r.Req
 	switch sel {
 	case "basic":
-		return AuthSpec{Mode: AuthBasic,
+		return send.AuthSpec{Mode: send.AuthBasic,
 			Username: get(req.AuthBasic, "username"), Password: get(req.AuthBasic, "password")}
 	case "bearer":
-		return AuthSpec{Mode: AuthBearer, Token: get(req.AuthBearer, "token")}
+		return send.AuthSpec{Mode: send.AuthBearer, Token: get(req.AuthBearer, "token")}
 	case "apikey":
-		return AuthSpec{Mode: AuthAPIKey,
+		return send.AuthSpec{Mode: send.AuthAPIKey,
 			Key: get(req.AuthAPIKey, "key"), Value: get(req.AuthAPIKey, "value"),
-			Location: AuthLocation(orDefaultS(get(req.AuthAPIKey, "placement"), "header"))}
+			Location: send.AuthLocation(orDefaultS(get(req.AuthAPIKey, "placement"), "header"))}
 	case "digest":
-		return AuthSpec{Mode: AuthDigest,
+		return send.AuthSpec{Mode: send.AuthDigest,
 			Username: get(req.AuthDigest, "username"), Password: get(req.AuthDigest, "password")}
 	case "awsv4", "wsse", "ntlm", "oauth2":
-		return AuthSpec{Mode: AuthMode(sel)}
+		return send.AuthSpec{Mode: send.AuthMode(sel)}
 	case "inherit":
 		return collectionAuthSpec(c, r)
 	default:
-		return AuthSpec{Mode: AuthNone}
+		return send.AuthSpec{Mode: send.AuthNone}
 	}
 }
 
 // collectionAuthSpec finds the effective auth for "inherit": innermost
 // folder.bru auth, else collection.bru.
-func collectionAuthSpec(c *Collection, r *BruRequest) AuthSpec {
+func collectionAuthSpec(c *Collection, r *BruRequest) send.AuthSpec {
 	if r != nil && r.Folder != "" {
 		parts := strings.Split(r.Folder, "/")
 		for i := len(parts); i >= 1; i-- {
@@ -60,55 +61,55 @@ func collectionAuthSpec(c *Collection, r *BruRequest) AuthSpec {
 	if c.Dot != nil && c.Dot.Auth != "" && c.Dot.Auth != "none" && c.Dot.Auth != "inherit" {
 		return cbAuthSpec(c.Dot)
 	}
-	return AuthSpec{Mode: AuthNone}
+	return send.AuthSpec{Mode: send.AuthNone}
 }
 
 // cbAuthSpec maps a CollectionBru auth selector to an AuthSpec.
-func cbAuthSpec(cb *bru.CollectionBru) AuthSpec {
+func cbAuthSpec(cb *bru.CollectionBru) send.AuthSpec {
 	switch cb.Auth {
 	case "basic":
-		return AuthSpec{Mode: AuthBasic,
+		return send.AuthSpec{Mode: send.AuthBasic,
 			Username: get(cb.AuthBasic, "username"), Password: get(cb.AuthBasic, "password")}
 	case "bearer":
-		return AuthSpec{Mode: AuthBearer, Token: get(cb.AuthBearer, "token")}
+		return send.AuthSpec{Mode: send.AuthBearer, Token: get(cb.AuthBearer, "token")}
 	case "apikey":
-		return AuthSpec{Mode: AuthAPIKey,
+		return send.AuthSpec{Mode: send.AuthAPIKey,
 			Key: get(cb.AuthAPIKey, "key"), Value: get(cb.AuthAPIKey, "value"),
-			Location: AuthLocation(orDefaultS(get(cb.AuthAPIKey, "placement"), "header"))}
+			Location: send.AuthLocation(orDefaultS(get(cb.AuthAPIKey, "placement"), "header"))}
 	case "digest":
-		return AuthSpec{Mode: AuthDigest,
+		return send.AuthSpec{Mode: send.AuthDigest,
 			Username: get(cb.AuthDigest, "username"), Password: get(cb.AuthDigest, "password")}
 	}
-	return AuthSpec{Mode: AuthNone}
+	return send.AuthSpec{Mode: send.AuthNone}
 }
 
 // bruBodySpec maps the selector to a BodySpec; unsupported modes keep
 // their raw text for the editor but send as BodyNone.
-func bruBodySpec(sel string, r *bru.Request) BodySpec {
+func bruBodySpec(sel string, r *bru.Request) send.BodySpec {
 	switch sel {
 	case "json":
-		return BodySpec{Mode: BodyJSON, Text: r.BodyJSON}
+		return send.BodySpec{Mode: send.BodyJSON, Text: r.BodyJSON}
 	case "text":
-		return BodySpec{Mode: BodyText, Text: r.BodyText}
+		return send.BodySpec{Mode: send.BodyText, Text: r.BodyText}
 	case "xml":
 		// No dedicated BodyMode; send as text so it still goes out.
-		return BodySpec{Mode: BodyText, Text: r.BodyXML}
+		return send.BodySpec{Mode: send.BodyText, Text: r.BodyXML}
 	case "form-urlencoded":
-		return BodySpec{Mode: BodyURLEncoded, Form: dictPairs(r.BodyFormURLEnc)}
+		return send.BodySpec{Mode: send.BodyURLEncoded, Form: dictPairs(r.BodyFormURLEnc)}
 	case "graphql":
 		// Bruno sends {query, variables} as JSON.
 		q, _ := json.Marshal(r.BodyGraphQL)
 		if r.BodyGraphQLVars != "" {
-			return BodySpec{Mode: BodyJSON, Text: `{"query":` + string(q) + `,"variables":` + r.BodyGraphQLVars + `}`}
+			return send.BodySpec{Mode: send.BodyJSON, Text: `{"query":` + string(q) + `,"variables":` + r.BodyGraphQLVars + `}`}
 		}
-		return BodySpec{Mode: BodyJSON, Text: `{"query":` + string(q) + `}`}
+		return send.BodySpec{Mode: send.BodyJSON, Text: `{"query":` + string(q) + `}`}
 	default:
-		return BodySpec{Mode: BodyNone}
+		return send.BodySpec{Mode: send.BodyNone}
 	}
 }
 
 // sendInputOf builds SendInput for one stored request.
-func (c *Collection) sendInputOf(r *BruRequest) SendInput {
+func (c *Collection) sendInputOf(r *BruRequest) send.SendInput {
 	// Collection/folder headers apply first; a request header of the
 	// same name overrides rather than duplicates.
 	reqHeaderNames := map[string]bool{}
@@ -117,18 +118,18 @@ func (c *Collection) sendInputOf(r *BruRequest) SendInput {
 			reqHeaderNames[strings.ToLower(e.Key)] = true
 		}
 	}
-	var headers []Pair
+	var headers []send.Pair
 	for _, d := range c.collectionHeaders(r) {
 		for _, e := range d {
 			if e.Enabled && reqHeaderNames[strings.ToLower(e.Key)] {
 				continue
 			}
-			headers = append(headers, Pair{Key: e.Key, Value: e.Value, Enabled: e.Enabled})
+			headers = append(headers, send.Pair{Key: e.Key, Value: e.Value, Enabled: e.Enabled})
 		}
 	}
 	headers = append(headers, dictPairs(r.Req.Headers)...)
 
-	scopes := make([][]Pair, 0, 8)
+	scopes := make([][]send.Pair, 0, 8)
 	for _, d := range c.varScopes(r) {
 		scopes = append(scopes, dictPairs(d))
 	}
@@ -141,8 +142,8 @@ func (c *Collection) sendInputOf(r *BruRequest) SendInput {
 		url, _, _ = strings.Cut(url, "?")
 	}
 
-	return SendInput{
-		Request: RequestData{
+	return send.SendInput{
+		Request: send.RequestData{
 			Name:       r.Req.Meta.Name,
 			Method:     r.Req.UpperMethod(),
 			URL:        url,

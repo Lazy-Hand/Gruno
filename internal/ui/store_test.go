@@ -1,12 +1,12 @@
-package main
+package ui
 
 import (
+	"gruno/bru"
+	"gruno/internal/send"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"gruno/bru"
 )
 
 func newCollection(t *testing.T) *Collection {
@@ -216,10 +216,10 @@ func TestSendInputAdaptation(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("header duplication: %v", in.Request.Headers)
 	}
-	if in.Request.Auth.Mode != AuthBearer || in.Request.Auth.Token != "tok" {
+	if in.Request.Auth.Mode != send.AuthBearer || in.Request.Auth.Token != "tok" {
 		t.Fatalf("auth: %+v", in.Request.Auth)
 	}
-	if in.Request.Body.Mode != BodyJSON || in.Request.Body.Text != `{"a":1}` {
+	if in.Request.Body.Mode != send.BodyJSON || in.Request.Body.Text != `{"a":1}` {
 		t.Fatalf("body: %+v", in.Request.Body)
 	}
 }
@@ -231,7 +231,7 @@ func TestInheritAuth(t *testing.T) {
 	r, _ := c.AddRequest("", "R")
 	r.Req.Auth = "inherit"
 	in := c.sendInputOf(r)
-	if in.Request.Auth.Mode != AuthBasic || in.Request.Auth.Username != "u" {
+	if in.Request.Auth.Mode != send.AuthBasic || in.Request.Auth.Username != "u" {
 		t.Fatalf("inherited auth: %+v", in.Request.Auth)
 	}
 }

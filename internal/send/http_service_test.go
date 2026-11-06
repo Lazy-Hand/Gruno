@@ -1,4 +1,4 @@
-package main
+package send
 
 import (
 	"context"
@@ -13,10 +13,10 @@ import (
 
 func sendTo(t *testing.T, srv *httptest.Server, data RequestData) (ResponseHead, ResponseResult) {
 	t.Helper()
-	s := newHTTPService()
+	s := NewHTTPService()
 	var head ResponseHead
 	gotHead := false
-	result, err := s.send(context.Background(), inputFor(data, nil, nil), func(h ResponseHead) error {
+	result, err := s.Send(context.Background(), inputFor(data, nil, nil), func(h ResponseHead) error {
 		head = h
 		gotHead = true
 		return nil
@@ -182,11 +182,11 @@ func TestSendCancel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := newHTTPService()
+	s := NewHTTPService()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan ResponseResult, 1)
 	go func() {
-		res, _ := s.send(ctx, inputFor(RequestData{Method: "GET", URL: srv.URL}, nil, nil), func(ResponseHead) error { return nil })
+		res, _ := s.Send(ctx, inputFor(RequestData{Method: "GET", URL: srv.URL}, nil, nil), func(ResponseHead) error { return nil })
 		done <- res
 	}()
 	time.Sleep(100 * time.Millisecond)
@@ -203,8 +203,8 @@ func TestSendCancel(t *testing.T) {
 
 func TestSendNetworkError(t *testing.T) {
 	// Port 1 is never listening.
-	s := newHTTPService()
-	result, err := s.send(context.Background(), inputFor(RequestData{Method: "GET", URL: "http://127.0.0.1:1/"}, nil, nil), func(ResponseHead) error { return nil })
+	s := NewHTTPService()
+	result, err := s.Send(context.Background(), inputFor(RequestData{Method: "GET", URL: "http://127.0.0.1:1/"}, nil, nil), func(ResponseHead) error { return nil })
 	if err != nil {
 		t.Fatalf("network failure should be a result: %v", err)
 	}
@@ -214,9 +214,9 @@ func TestSendNetworkError(t *testing.T) {
 }
 
 func TestSendInvalidRequest(t *testing.T) {
-	s := newHTTPService()
+	s := NewHTTPService()
 	blocked := RequestData{Method: "GET", URL: "not a url"}
-	result, err := s.send(context.Background(), inputFor(blocked, nil, nil), func(ResponseHead) error { return nil })
+	result, err := s.Send(context.Background(), inputFor(blocked, nil, nil), func(ResponseHead) error { return nil })
 	if err != nil {
 		t.Fatalf("invalid request should be a result, not Go error: %v", err)
 	}
@@ -234,11 +234,11 @@ func TestSendHeadBeforeBody(t *testing.T) {
 		io.WriteString(w, "late body")
 	}))
 	defer srv.Close()
-	s := newHTTPService()
+	s := NewHTTPService()
 	headCh := make(chan ResponseHead, 1)
 	done := make(chan ResponseResult, 1)
 	go func() {
-		res, _ := s.send(context.Background(), inputFor(RequestData{Method: "GET", URL: srv.URL}, nil, nil), func(h ResponseHead) error {
+		res, _ := s.Send(context.Background(), inputFor(RequestData{Method: "GET", URL: srv.URL}, nil, nil), func(h ResponseHead) error {
 			headCh <- h
 			return nil
 		})

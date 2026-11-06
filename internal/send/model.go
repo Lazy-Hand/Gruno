@@ -1,4 +1,4 @@
-package main
+package send
 
 // Data contracts shared by the send path: the editable request view,
 // response head/result and the pair tables.

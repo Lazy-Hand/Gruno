@@ -1,4 +1,4 @@
-package main
+package ui
 
 // Smoke tests of the workbench via ui.NewTester: collection opening,
 // tree selection, tab behavior and the request editor's sections.
