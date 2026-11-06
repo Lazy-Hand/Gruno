@@ -29,7 +29,8 @@ jobs:
       # The tag is the version of record; stamp it into the build config so
       # the bundle and disk image carry it (v1.2.3 -> 1.2.3).
       - name: Set version from tag
-        run: sed -i '' "s/version: \".*\"/version: \"${GITHUB_REF_NAME#v}\"/" mygo.config.ts
+        run: |
+          sed -i '' "s/version: \".*\"/version: \"${GITHUB_REF_NAME#v}\"/" mygo.config.ts
 
       # Ad hoc signing (no Developer ID configured); universal covers both
       # Apple silicon and Intel macs from one archive.
