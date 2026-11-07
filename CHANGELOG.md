@@ -1,5 +1,16 @@
 # Changelog
 
+
+## [0.1.2] - 2026-11-07
+
+- Variable insertion, Apifox-style: a {} icon on every interpolatable
+  input (URL, params, headers, auth fields, env vars) and on each code
+  editor's toolbar (body, GraphQL, scripts, tests, docs). Picking a
+  variable inserts {{name}} into that field, at the caret in editors,
+  completing a typed {{ prefix elsewhere
+- The menu lists variables in Bruno's resolution order: collection,
+  folder, active environment, request
+
 ## [0.1.1] - 2026-11-06
 
 - In-app updates: a Sparkle-style window checks GitHub Releases in the

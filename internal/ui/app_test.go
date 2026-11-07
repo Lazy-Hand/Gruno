@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"gruno/bru"
 )
 
 func openedApp(t *testing.T) *app {
@@ -66,6 +68,57 @@ func TestSectionSwitching(t *testing.T) {
 		if err := tt.Click(tab); err != nil {
 			t.Fatalf("tab %s: %v", tab, err)
 		}
+	}
+}
+
+func TestVarsMenuInsertsVariable(t *testing.T) {
+	a := openedApp(t)
+	env, err := a.coll.AddEnvironment("Local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Vars = bru.Dict{{Key: "baseURL", Value: "http://x", Enabled: true}}
+	if err := a.coll.SetActiveEnv("Local"); err != nil {
+		t.Fatal(err)
+	}
+	a.envSel = "Local"
+	br, _ := a.coll.AddRequest("", "R")
+	br.Req.URL = "https://api"
+	br.Req.VarsPreRequest = bru.Dict{{Key: "rid", Value: "1", Enabled: true}}
+	a.openTab(br)
+
+	tt := ui.NewTester(a.view, 1200, 800)
+	if err := tt.Click("插入变量"); err != nil {
+		t.Fatalf("vars button: %v", err)
+	}
+	got := tt.Menu()
+	if !slices.Contains(got, "环境变量 Local") ||
+		!slices.Contains(got, "本请求变量") ||
+		!slices.Contains(got, "baseURL  ·  http://x") {
+		t.Fatalf("menu items missing: %q", got)
+	}
+	if err := tt.ChooseMenuItem("rid  ·  1"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://api{{rid}}"; br.Req.URL != want {
+		t.Fatalf("url %q, want %q", br.Req.URL, want)
+	}
+
+	// The {} button beside a Params value cell writes into that cell,
+	// completing a typed {{ prefix.
+	br.Req.ParamsQuery = bru.Dict{{Key: "q", Value: "x{{ba", Enabled: true}}
+	tt.Frame()
+	rect, ok := tt.Find("变量值")
+	if !ok {
+		t.Fatal("value input not found")
+	}
+	// The braces button sits just right of the value input.
+	tt.ClickAt(rect.X+rect.W+14, rect.Y+rect.H/2)
+	if err := tt.ChooseMenuItem("baseURL  ·  http://x"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "x{{baseURL}}"; br.Req.ParamsQuery[0].Value != want {
+		t.Fatalf("param value %q, want %q", br.Req.ParamsQuery[0].Value, want)
 	}
 }
 

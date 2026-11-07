@@ -794,6 +794,99 @@ func (a *app) envMenu(m *ui.Menu) {
 	}
 }
 
+// insertVarText returns s with {{key}} inserted: a trailing "{{" or
+// "{{prefix" typed in anticipation completes instead of duplicating.
+func insertVarText(s, key string) string {
+	tok := "{{" + key + "}}"
+	if i := strings.LastIndex(s, "{{"); i >= 0 && !strings.Contains(s[i+2:], "}") {
+		return s[:i] + tok
+	}
+	return s + tok
+}
+
+// varButton renders the small {} trigger Apifox puts on each input;
+// choosing a variable inserts {{name}} into the bound field.
+func (a *app) varButton(c *ui.Context, br *BruRequest, v *string, set func(string)) ui.Element {
+	btn := ui.Button(c, "").Padding(3, 5).Gap(0).Label("插入变量")
+	btn.Children(func() {
+		ui.Icon(c, iconBraces).Size(13, 13).TextColor(c.Theme().TextMuted)
+	})
+	btn.Menu(func(m *ui.Menu) {
+		a.varsMenu(m, br, func(key string) { set(insertVarText(*v, key)) })
+	})
+	return btn
+}
+
+// varEditorButton is varButton for code editors: choosing a variable
+// writes {{name}} at the caret, as typing it, preserving undo.
+func (a *app) varEditorButton(c *ui.Context, br *BruRequest, st *editor.State) ui.Element {
+	btn := ui.Button(c, "").Padding(3, 5).Gap(0).Label("插入变量")
+	btn.Children(func() {
+		ui.Icon(c, iconBraces).Size(13, 13).TextColor(c.Theme().TextMuted)
+	})
+	btn.Menu(func(m *ui.Menu) {
+		a.varsMenu(m, br, func(key string) { st.Insert("{{" + key + "}}") })
+	})
+	return btn
+}
+
+// varsMenu lists every variable that would resolve for br at send time,
+// grouped by scope; choosing one inserts its {{name}} through insert.
+// br may be nil for inputs outside a request, as the env editor's.
+func (a *app) varsMenu(m *ui.Menu, br *BruRequest, insert func(key string)) {
+	add := func(src string, d bru.Dict) {
+		if len(d) == 0 {
+			return
+		}
+		m.Item(src).Disabled(true)
+		for _, e := range d {
+			if !e.Enabled || e.Key == "" {
+				continue
+			}
+			e := e
+			label := e.Key
+			if v := e.Value; v != "" {
+				const max = 36
+				if len(v) > max {
+					v = v[:max] + "…"
+				}
+				label += "  ·  " + v
+			}
+			if m.Item(label).Chosen() {
+				insert(e.Key)
+			}
+		}
+	}
+
+	if a.coll != nil && a.coll.Dot != nil {
+		add("集合变量", a.coll.Dot.Vars)
+	}
+	if a.coll != nil && br != nil && br.Folder != "" {
+		parts := strings.Split(br.Folder, "/")
+		for i := range parts {
+			f := a.coll.folderByPath(strings.Join(parts[:i+1], "/"))
+			if f != nil && f.Bru != nil {
+				add("目录变量 "+filepath.Base(f.Path), f.Bru.Vars)
+			}
+		}
+	}
+	if a.coll != nil {
+		for _, e := range a.coll.Environments {
+			if e.Name == a.coll.ActiveEnv {
+				add("环境变量 "+e.Name, e.Vars)
+			}
+		}
+	}
+	if br != nil {
+		add("本请求变量", br.Req.VarsPreRequest)
+	}
+
+	m.Separator()
+	if m.Item("查看环境变量…").Chosen() {
+		a.envInspector = true
+	}
+}
+
 // envPicker is the top-right environment selector, as in Bruno.
 func (a *app) envPicker(c *ui.Context) {
 	names := []string{"No Environment"}
@@ -1213,6 +1306,11 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 				extractQueryToParams(r)
 				a.save(br)
 			}
+			a.varButton(c, br, &r.URL, func(s string) {
+				r.URL = s
+				extractQueryToParams(r)
+				a.save(br)
+			})
 			saveBtn := ui.Button(c, "").Gap(5)
 			saveBtn.Children(func() {
 				ui.Icon(c, iconDeviceFloppy).Size(14, 14)
@@ -1316,12 +1414,21 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 				ui.Box(c).Height(10)
 				a.dictTable(c, &r.VarsPostResponse, "Post Response Variables", br, ts)
 			case 5:
-				ui.Text(c, "Pre Request").Bold().FontSize(12).Padding(0, 0, 4, 0)
+				ui.Row(c).AlignItems(ui.Center).Padding(0, 0, 4, 0).Children(func() {
+					ui.Text(c, "Pre Request").Bold().FontSize(12).Grow(1)
+					a.varEditorButton(c, br, ts.scriptPre)
+				})
 				editor.View(c.Key(br.Path+"-pre"), ts.scriptPre).Height(160).FillWidth()
-				ui.Text(c, "Post Response").Bold().FontSize(12).Padding(8, 0, 4, 0)
+				ui.Row(c).AlignItems(ui.Center).Padding(8, 0, 4, 0).Children(func() {
+					ui.Text(c, "Post Response").Bold().FontSize(12).Grow(1)
+					a.varEditorButton(c, br, ts.scriptPost)
+				})
 				editor.View(c.Key(br.Path+"-post"), ts.scriptPost).Height(160).FillWidth()
 			case 6:
-				ui.Text(c, "Tests (JavaScript)").Bold().FontSize(12).Padding(0, 0, 4, 0)
+				ui.Row(c).AlignItems(ui.Center).Padding(0, 0, 4, 0).Children(func() {
+					ui.Text(c, "Tests (JavaScript)").Bold().FontSize(12).Grow(1)
+					a.varEditorButton(c, br, ts.testsEd)
+				})
 				editor.View(c.Key(br.Path+"-tests"), ts.testsEd).Height(300).FillWidth()
 			case 7:
 				a.dictTable(c, &r.Assert, "Assertions (Expr -> Expected)", br, ts)
@@ -1339,6 +1446,9 @@ func (a *app) docsSection(c *ui.Context, br *BruRequest, ts *tabState) {
 	ui.Column(c).Gap(6).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "文档说明 (Markdown)").Bold().FontSize(12).Grow(1)
+			if !ts.docsPreview {
+				a.varEditorButton(c, br, ts.docsEd)
+			}
 			btnIcon := iconEye
 			btnLabel := "预览 Markdown"
 			if ts.docsPreview {
@@ -1423,10 +1533,10 @@ func (a *app) dictTable(c *ui.Context, d *bru.Dict, label string, br *BruRequest
 		}
 		onChange()
 		saveFn()
-	})
+	}, br)
 }
 
-func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix string, onEdit func()) {
+func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix string, onEdit func(), br *BruRequest) {
 	t := c.Theme()
 	ui.Column(c).Gap(0).Children(func() {
 		// Table title / label
@@ -1455,7 +1565,14 @@ func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix strin
 				if ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(180).Placeholder("Key").Changed() {
 					onEdit()
 				}
-				if ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value").Changed() {
+				vInp := ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value").Label("变量值")
+				a.varButton(c, br, &e.Value, func(s string) {
+					if i < len(*d) && &(*d)[i] == e {
+						e.Value = s
+						onEdit()
+					}
+				})
+				if vInp.Changed() {
 					onEdit()
 				}
 				delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除行")
@@ -1546,10 +1663,14 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 		a.dictTable(c, d, kind, br, ts)
 	case "graphql":
 		ui.Column(c).Gap(8).Children(func() {
-			ui.Text(c, "QUERY").Bold().FontSize(11).TextColor(t.TextMuted)
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "QUERY").Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
+				a.varEditorButton(c, br, ts.bodyEd)
+			})
 			editor.View(c.Key(br.Path+"-gql-q"), ts.bodyEd).Height(180).FillWidth()
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "VARIABLES (JSON)").Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
+				a.varEditorButton(c, br, ts.gqlVarsEd)
 				fmtBtn := ui.Button(c, "").Gap(4).Padding(3, 8)
 				fmtBtn.Children(func() {
 					ui.Icon(c, iconWand).Size(13, 13)
@@ -1565,9 +1686,10 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 			editor.View(c.Key(br.Path+"-gql-v"), ts.gqlVarsEd).Height(120).FillWidth()
 		})
 	default:
-		if kind == "json" {
-			ui.Row(c).Padding(2, 0, 6, 0).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "JSON").Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
+		ui.Row(c).Padding(2, 0, 6, 0).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, strings.ToUpper(kind)).Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
+			a.varEditorButton(c, br, ts.bodyEd)
+			if kind == "json" {
 				fmtBtn := ui.Button(c, "").Gap(4).Padding(3, 8)
 				fmtBtn.Children(func() {
 					ui.Icon(c, iconWand).Size(13, 13)
@@ -1579,8 +1701,8 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 					setBodyText(r, formatted)
 					a.save(br)
 				}
-			})
-		}
+			}
+		})
 		editor.View(c.Key(br.Path+"-body"), ts.bodyEd).Height(280).FillWidth()
 	}
 }
@@ -1603,13 +1725,13 @@ func (a *app) authEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 			ui.Text(c, "此请求不使用认证 (No Auth)").TextColor(t.TextMuted).FontSize(12)
 		})
 	case "basic":
-		a.authFields(c, br.Path, &r.AuthBasic, func() { a.save(br) }, "username", "password")
+		a.authFields(c, br, br.Path, &r.AuthBasic, func() { a.save(br) }, "username", "password")
 	case "bearer":
-		a.authFields(c, br.Path, &r.AuthBearer, func() { a.save(br) }, "token")
+		a.authFields(c, br, br.Path, &r.AuthBearer, func() { a.save(br) }, "token")
 	case "apikey":
-		a.authAPIKeyFields(c, br.Path, &r.AuthAPIKey, func() { a.save(br) })
+		a.authAPIKeyFields(c, br, br.Path, &r.AuthAPIKey, func() { a.save(br) })
 	case "digest":
-		a.authFields(c, br.Path, &r.AuthDigest, func() { a.save(br) }, "username", "password")
+		a.authFields(c, br, br.Path, &r.AuthDigest, func() { a.save(br) }, "username", "password")
 	case "oauth2", "awsv4", "wsse", "ntlm":
 		ui.Text(c, "该认证类型暂不支持编辑参数").TextColor(t.TextMuted)
 	case "inherit":
@@ -1638,10 +1760,10 @@ func (a *app) authEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 }
 
 // authAPIKeyFields renders key, value (masked) and placement selector (header/query).
-func (a *app) authAPIKeyFields(c *ui.Context, keyPrefix string, d *bru.Dict, onSave func()) {
+func (a *app) authAPIKeyFields(c *ui.Context, br *BruRequest, keyPrefix string, d *bru.Dict, onSave func()) {
 	ui.Column(c).Gap(8).Padding(8, 0).Children(func() {
-		a.authFieldRow(c, keyPrefix, d, "key", false, onSave)
-		a.authFieldRow(c, keyPrefix, d, "value", true, onSave)
+		a.authFieldRow(c, br, keyPrefix, d, "key", false, onSave)
+		a.authFieldRow(c, br, keyPrefix, d, "value", true, onSave)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "placement").Width(90).FontSize(12)
 			pl := orDefaultS(dictValue(*d, "placement"), "header")
@@ -1654,16 +1776,16 @@ func (a *app) authAPIKeyFields(c *ui.Context, keyPrefix string, d *bru.Dict, onS
 }
 
 // authFields renders labeled inputs for keys of d.
-func (a *app) authFields(c *ui.Context, keyPrefix string, d *bru.Dict, onSave func(), keys ...string) {
+func (a *app) authFields(c *ui.Context, br *BruRequest, keyPrefix string, d *bru.Dict, onSave func(), keys ...string) {
 	ui.Column(c).Gap(8).Padding(8, 0).Children(func() {
 		for _, k := range keys {
 			secret := k == "password" || k == "token" || k == "value"
-			a.authFieldRow(c, keyPrefix, d, k, secret, onSave)
+			a.authFieldRow(c, br, keyPrefix, d, k, secret, onSave)
 		}
 	})
 }
 
-func (a *app) authFieldRow(c *ui.Context, keyPrefix string, d *bru.Dict, k string, secret bool, onSave func()) {
+func (a *app) authFieldRow(c *ui.Context, br *BruRequest, keyPrefix string, d *bru.Dict, k string, secret bool, onSave func()) {
 	fieldKey := keyPrefix + "-auth-" + k
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, k).Width(90).FontSize(12)
@@ -1672,6 +1794,10 @@ func (a *app) authFieldRow(c *ui.Context, keyPrefix string, d *bru.Dict, k strin
 		if secret && !a.revealAuth[fieldKey] {
 			inp.Password()
 		}
+		a.varButton(c, br, &v, func(s string) {
+			dictSet(d, k, s)
+			onSave()
+		})
 		if inp.Changed() {
 			dictSet(d, k, v)
 			onSave()
@@ -1917,7 +2043,7 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 				case 0:
 					a.dictTableCustom(c, &dot.Headers, "Collection Headers", "coll-hdr", func() {
 						a.coll.SaveCollectionBru()
-					})
+					}, nil)
 				case 1:
 					mode := orDefaultS(dot.Auth, "none")
 					collAuthKinds := []string{"none", "basic", "bearer", "apikey", "digest"}
@@ -1932,18 +2058,18 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 					case "none":
 						ui.Text(c, "集合未配置默认认证 (子请求选择 inherit 时将不发送认证)").TextColor(t.TextMuted).FontSize(12)
 					case "basic":
-						a.authFields(c, "coll", &dot.AuthBasic, func() { a.coll.SaveCollectionBru() }, "username", "password")
+						a.authFields(c, nil, "coll", &dot.AuthBasic, func() { a.coll.SaveCollectionBru() }, "username", "password")
 					case "bearer":
-						a.authFields(c, "coll", &dot.AuthBearer, func() { a.coll.SaveCollectionBru() }, "token")
+						a.authFields(c, nil, "coll", &dot.AuthBearer, func() { a.coll.SaveCollectionBru() }, "token")
 					case "apikey":
-						a.authAPIKeyFields(c, "coll", &dot.AuthAPIKey, func() { a.coll.SaveCollectionBru() })
+						a.authAPIKeyFields(c, nil, "coll", &dot.AuthAPIKey, func() { a.coll.SaveCollectionBru() })
 					case "digest":
-						a.authFields(c, "coll", &dot.AuthDigest, func() { a.coll.SaveCollectionBru() }, "username", "password")
+						a.authFields(c, nil, "coll", &dot.AuthDigest, func() { a.coll.SaveCollectionBru() }, "username", "password")
 					}
 				case 2:
 					a.dictTableCustom(c, &dot.Vars, "Collection Variables", "coll-vars", func() {
 						a.coll.SaveCollectionBru()
-					})
+					}, nil)
 				case 3:
 					if a.collScriptPre != nil && a.collScriptPost != nil {
 						ui.Text(c, "Pre Request").Bold().FontSize(12)
@@ -2263,6 +2389,11 @@ func (a *app) envEditorModal(c *ui.Context) {
 							ui.Checkbox(c.Key(rowKey+"-cb"), &e.Enabled, "")
 							ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(160).Placeholder("Key")
 							ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value")
+							a.varButton(c, nil, &e.Value, func(s string) {
+								if i < len(a.envDraft.Vars) && &a.envDraft.Vars[i] == e {
+									e.Value = s
+								}
+							})
 							delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除变量")
 							delBtn.Children(func() { ui.Icon(c, iconTrash).Size(13, 13) })
 							if delBtn.Clicked() {
