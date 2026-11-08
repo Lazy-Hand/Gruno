@@ -80,8 +80,9 @@ type RequestData struct {
 // SendInput is the payload of a send: the request plus the variable
 // scopes to resolve against, ordered lowest precedence first.
 type SendInput struct {
-	Request RequestData `json:"request"`
-	Scopes  [][]Pair    `json:"scopes"`
+	Request  RequestData `json:"request"`
+	Scopes   [][]Pair    `json:"scopes"`
+	Settings Settings    `json:"settings"`
 }
 
 // ResponseHead arrives on the send channel as soon as response headers are

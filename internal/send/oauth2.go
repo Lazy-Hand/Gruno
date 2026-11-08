@@ -106,7 +106,7 @@ func resolvedOAuth2(r *varResolver, spec OAuth2Spec) (OAuth2Spec, error) {
 // how to attach it to the built request: as a literal, after variable
 // resolution, so a token is never read as a template. note says what
 // happened, for the timeline.
-func (s *HTTPService) oauth2Attach(ctx context.Context, input SendInput) (func(*http.Request) error, string, error) {
+func (s *HTTPService) oauth2Attach(ctx context.Context, input SendInput, clientFor func(*url.URL) (*http.Client, error)) (func(*http.Request) error, string, error) {
 	spec := input.Request.Auth.OAuth2
 	if spec == nil {
 		return nil, "", errors.New("OAuth2 配置缺失")
@@ -118,7 +118,7 @@ func (s *HTTPService) oauth2Attach(ctx context.Context, input SendInput) (func(*
 	if sp.TokenPlacement != "url" && hasHeader(input.Request.Headers, "authorization") {
 		return nil, "", errors.New("OAuth2 认证与手动 Authorization 请求头冲突: 请删除其中一项")
 	}
-	token, note, err := s.oauth2Token(ctx, sp)
+	token, note, err := s.oauth2Token(ctx, sp, clientFor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -143,7 +143,7 @@ func (s *HTTPService) oauth2Attach(ctx context.Context, input SendInput) (func(*
 }
 
 // oauth2Token returns a usable token: cached, refreshed or fetched.
-func (s *HTTPService) oauth2Token(ctx context.Context, sp OAuth2Spec) (string, string, error) {
+func (s *HTTPService) oauth2Token(ctx context.Context, sp OAuth2Spec, clientFor func(*url.URL) (*http.Client, error)) (string, string, error) {
 	if sp.GrantType == "" {
 		sp.GrantType = "client_credentials"
 	}
@@ -165,7 +165,7 @@ func (s *HTTPService) oauth2Token(ctx context.Context, sp OAuth2Spec) (string, s
 		if endpoint == "" {
 			endpoint = sp.AccessTokenURL
 		}
-		if t, err := s.requestToken(ctx, endpoint, sp, form); err == nil {
+		if t, err := s.requestToken(ctx, clientFor, endpoint, sp, form); err == nil {
 			if t.RefreshToken == "" {
 				t.RefreshToken = cached.RefreshToken
 			}
@@ -182,7 +182,7 @@ func (s *HTTPService) oauth2Token(ctx context.Context, sp OAuth2Spec) (string, s
 		form.Set("username", sp.Username)
 		form.Set("password", sp.Password)
 	}
-	t, err := s.requestToken(ctx, sp.AccessTokenURL, sp, form)
+	t, err := s.requestToken(ctx, clientFor, sp.AccessTokenURL, sp, form)
 	if err != nil {
 		return "", "", err
 	}
@@ -199,7 +199,7 @@ func expiryNote(t oauth2Token, now time.Time) string {
 
 // requestToken posts a token request and decodes the reply (JSON, or
 // form-encoded as some providers still send).
-func (s *HTTPService) requestToken(ctx context.Context, endpoint string, sp OAuth2Spec, form url.Values) (oauth2Token, error) {
+func (s *HTTPService) requestToken(ctx context.Context, clientFor func(*url.URL) (*http.Client, error), endpoint string, sp OAuth2Spec, form url.Values) (oauth2Token, error) {
 	if sp.Scope != "" {
 		form.Set("scope", sp.Scope)
 	}
@@ -222,7 +222,11 @@ func (s *HTTPService) requestToken(ctx context.Context, endpoint string, sp OAut
 	if sp.CredentialsPlacement == "basic_auth_header" {
 		req.SetBasicAuth(url.QueryEscape(sp.ClientID), url.QueryEscape(sp.ClientSecret))
 	}
-	resp, err := s.client.Do(req)
+	client, err := clientFor(req.URL)
+	if err != nil {
+		return oauth2Token{}, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return oauth2Token{}, fmt.Errorf("OAuth2: 请求 token 失败: %s", sanitizeRequestError(err))
 	}

@@ -51,6 +51,8 @@ func SerializeRequest(r *Request) string {
 	writeText(&b, "tests", r.Tests)
 	writeText(&b, "docs", r.Docs)
 	writeDict(&b, "assert", r.Assert)
+	writeDict(&b, "settings", r.Settings)
+	writeRaw(&b, r.Extra)
 
 	return b.String()
 }
@@ -92,7 +94,24 @@ func SerializeCollection(cb *CollectionBru) string {
 	writeText(&b, "script:post-response", cb.ScriptPostResponse)
 	writeText(&b, "tests", cb.Tests)
 	writeText(&b, "docs", cb.Docs)
+	writeRaw(&b, cb.Extra)
 	return b.String()
+}
+
+// writeRaw writes unmodeled blocks back as they were read.
+func writeRaw(b *strings.Builder, blocks []RawBlock) {
+	for _, rb := range blocks {
+		closer := "}"
+		if rb.Open == '[' {
+			closer = "]"
+		}
+		fmt.Fprintf(b, "%s %c\n", rb.Tag, rb.Open)
+		for _, l := range rb.Lines {
+			b.WriteString(l)
+			b.WriteString("\n")
+		}
+		b.WriteString(closer + "\n\n")
+	}
 }
 
 // writeDict writes "tag {" then indented "key: value" lines then "}".

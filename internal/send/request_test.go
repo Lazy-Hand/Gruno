@@ -201,7 +201,7 @@ func TestPrepareRequestBodyAndAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 	data2 := RequestData{Method: "GET", URL: srv.URL, Auth: AuthSpec{Mode: AuthBasic, Username: "alice", Password: "s3cret"}}
-	resp, err := NewHTTPService().client.Do(mustReq(t, data2))
+	resp, err := http.DefaultClient.Do(mustReq(t, data2))
 	if err != nil {
 		t.Fatal(err)
 	}

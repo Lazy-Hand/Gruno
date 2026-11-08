@@ -37,6 +37,13 @@ func Run() {
 				{Role: mygo.RoleAbout},
 				updater.MenuItem(),
 				mygo.Separator(),
+				{Label: "偏好设置…", Accelerator: "CmdOrCtrl+,", Click: func(_ *mygo.MenuItem, w *mygo.Window) {
+					a.openPrefs()
+					if w != nil {
+						w.Invalidate()
+					}
+				}},
+				mygo.Separator(),
 				{Role: mygo.RoleServices},
 				mygo.Separator(),
 				{Role: mygo.RoleHide},

@@ -20,6 +20,14 @@
   password grants, token cached and refreshed automatically, sent in
   the Authorization header or the URL; the timeline says whether a
   token was fetched, refreshed or reused
+- Network settings: Preferences (⌘,) for TLS certificate verification,
+  an extra CA certificate and the default timeout; a collection's proxy
+  (http, https, socks5, with auth and bypass list) and client
+  certificates (PEM or PFX by domain); per-request timeout and
+  redirect settings
+- Saving no longer drops what Gruno does not understand: unknown
+  bruno.json keys and unknown .bru blocks (such as auth:awsv4 or
+  settings) are kept as they were
 
 ## [0.1.2] - 2026-11-07
 

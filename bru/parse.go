@@ -180,6 +180,8 @@ func ParseRequest(src string) (*Request, error) {
 			r.Docs = parseText(b.lines)
 		case "assert":
 			r.Assert = parseDict(b.lines)
+		case "settings":
+			r.Settings = parseDict(b.lines)
 		default:
 			if methodTags[b.tag] {
 				r.Method = b.tag
@@ -193,8 +195,10 @@ func ParseRequest(src string) (*Request, error) {
 						r.Auth = e.Value
 					}
 				}
+				continue
 			}
-			// Unknown blocks are ignored, forward-compatible.
+			// Unknown blocks survive a save untouched.
+			r.Extra = append(r.Extra, RawBlock{Tag: b.tag, Open: b.open, Lines: b.lines})
 		}
 	}
 	return r, nil
@@ -272,6 +276,8 @@ func ParseCollection(src string) (*CollectionBru, error) {
 			cb.Tests = parseText(b.lines)
 		case "docs":
 			cb.Docs = parseText(b.lines)
+		default:
+			cb.Extra = append(cb.Extra, RawBlock{Tag: b.tag, Open: b.open, Lines: b.lines})
 		}
 	}
 	return cb, nil

@@ -219,3 +219,58 @@ func TestVarsMapPrecedence(t *testing.T) {
 		t.Fatalf("disabled var should not resolve: %v", m)
 	}
 }
+
+func TestSettingsAndUnknownBlocksSurvive(t *testing.T) {
+	src := `meta {
+  name: R
+  type: http
+  seq: 1
+}
+
+get {
+  url: http://x
+  body: none
+  auth: awsv4
+}
+
+auth:awsv4 {
+  accessKeyId: AK
+  service: s3
+}
+
+settings {
+  encodeUrl: true
+  timeout: 5000
+}
+
+future:block [
+  a
+  b
+]
+`
+	r, err := ParseRequest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := r.Settings.Get("timeout"); v != "5000" {
+		t.Fatalf("settings %+v", r.Settings)
+	}
+	out := SerializeRequest(r)
+	for _, want := range []string{"auth:awsv4 {\n  accessKeyId: AK\n  service: s3\n}", "settings {\n  encodeUrl: true\n  timeout: 5000\n}", "future:block [\n  a\n  b\n]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	r2, err := ParseRequest(out)
+	if err != nil || SerializeRequest(r2) != out {
+		t.Fatalf("not stable: %v\n%s", err, SerializeRequest(r2))
+	}
+
+	cb, err := ParseCollection("meta {\n  name: F\n  seq: 1\n}\n\nrequest {\n  x: 1\n}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := SerializeCollection(cb); !strings.Contains(out, "request {\n  x: 1\n}") {
+		t.Fatalf("collection:\n%s", out)
+	}
+}

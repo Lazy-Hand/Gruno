@@ -101,6 +101,15 @@ type app struct {
 	revealAuth map[string]bool
 	// oauth2Cleared notes the token cache was just cleared.
 	oauth2Cleared bool
+
+	// net are the network preferences; prefsDraft and prefsTimeoutIn
+	// back the preferences dialog. certPFX marks certificate rows
+	// switched to PFX before a file is chosen.
+	net            netPrefs
+	prefsOpen      bool
+	prefsDraft     netPrefs
+	prefsTimeoutIn string
+	certPFX        map[int]bool
 	mdOpts     markdown.Options
 }
 
@@ -163,6 +172,7 @@ func newApp() *app {
 		layoutHorizontal: true,
 		themeMode:        "system",
 		newRequestMethod: "GET",
+		net:              defaultNetPrefs,
 	}
 }
 
@@ -171,6 +181,7 @@ type prefsData struct {
 	Collection string   `json:"collection"`
 	Recents    []string `json:"recents,omitempty"`
 	Theme      string   `json:"theme,omitempty"`
+	Network    *netPrefs `json:"network,omitempty"`
 }
 
 // ---- collection lifecycle ----
@@ -233,7 +244,8 @@ func (a *app) saveLastDir(dir string) {
 		}
 	}
 	a.recentDirs = recents
-	data, _ := json.Marshal(prefsData{Collection: dir, Recents: recents, Theme: a.themeMode})
+	net := a.net
+	data, _ := json.Marshal(prefsData{Collection: dir, Recents: recents, Theme: a.themeMode, Network: &net})
 	os.WriteFile(p, data, 0o644)
 }
 
@@ -251,6 +263,9 @@ func (a *app) restoreLast() {
 		a.recentDirs = m.Recents
 		if m.Theme == "light" || m.Theme == "dark" || m.Theme == "system" {
 			a.themeMode = m.Theme
+		}
+		if m.Network != nil {
+			a.net = *m.Network
 		}
 		if m.Collection != "" {
 			a.openCollection(m.Collection)
@@ -427,7 +442,9 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	ts.sentReq = &reqSnap
 	ts.sentAt = time.Now()
 	ts.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// The client applies the configured timeout; cancel stops the send.
+	input.Settings = a.sendSettings(br)
+	ctx, cancel := context.WithCancel(context.Background())
 	ts.cancel = cancel
 	svc, services := a.svc, a.services
 	go func() {
@@ -811,6 +828,9 @@ func (a *app) collectionMenu(m *ui.Menu) {
 		a.initCollectionSettingsEditors()
 		a.collSettingsOpen = true
 	}
+	if m.Item("偏好设置…").Chosen() {
+		a.openPrefs()
+	}
 	if m.Item("重命名集合…").Chosen() {
 		a.renameCollIn = a.coll.Name
 		a.renameCollOpen = true
@@ -866,6 +886,9 @@ func (a *app) envMenu(m *ui.Menu) {
 	if m.Item("集合设置…").Chosen() {
 		a.initCollectionSettingsEditors()
 		a.collSettingsOpen = true
+	}
+	if m.Item("偏好设置…").Chosen() {
+		a.openPrefs()
 	}
 	if len(a.coll.Environments) > 0 {
 		m.Separator()
@@ -1431,7 +1454,7 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 		})
 
 		// Bruno's section sub-tabs with count/status badges
-		sections := []string{"Params", "Body", "Headers", "Auth", "Vars", "Script", "Tests", "Assert", "Docs"}
+		sections := []string{"Params", "Body", "Headers", "Auth", "Vars", "Script", "Tests", "Assert", "Docs", "Settings"}
 		{
 			tabs := ui.TabsBase(c, &ts.section, len(sections))
 			tabs.List.Gap(2).Padding(0, 12).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
@@ -1523,6 +1546,8 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 				a.dictTable(c, &r.Assert, "Assertions (Expr -> Expected)", br, ts)
 			case 8:
 				a.docsSection(c, br, ts)
+			case 9:
+				a.requestSettingsSection(c, br)
 			}
 		})
 		// Buffers persist on save via the section watchers.
@@ -2119,6 +2144,7 @@ func (a *app) modals(c *ui.Context) {
 	a.deleteModal(c)
 	a.deleteFolderModal(c)
 	a.envEditorModal(c)
+	a.prefsModal(c)
 	a.newEnvModal(c)
 	a.envInspectorModal(c)
 	a.collectionSettingsModal(c)
@@ -2135,7 +2161,7 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "集合设置 — "+a.coll.Name).Bold().FontSize(15).Grow(1)
 			})
-			ui.Tabs(c, &a.collSettingsTab, "Headers", "Auth", "Vars", "Script", "Tests", "Docs")
+			ui.Tabs(c, &a.collSettingsTab, "Headers", "Auth", "Vars", "Script", "Tests", "Docs", "Proxy", "客户端证书")
 			ui.Scroll(c).Height(340).Padding(6, 2).Children(func() {
 				switch a.collSettingsTab {
 				case 0:
@@ -2187,6 +2213,10 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 						ui.Text(c, "Collection Docs (Markdown)").Bold().FontSize(12)
 						editor.View(c.Key("coll-docs"), a.collDocsEd).Height(260).FillWidth()
 					}
+				case 6:
+					a.collectionProxyTab(c)
+				case 7:
+					a.collectionCertsTab(c)
 				}
 			})
 			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {

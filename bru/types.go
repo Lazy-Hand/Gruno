@@ -79,6 +79,22 @@ type Request struct {
 	Docs               string // docs Markdown
 
 	Assert Dict // assert block: expression -> expected
+
+	// Settings is the settings block: encodeUrl, timeout,
+	// followRedirects, maxRedirects.
+	Settings Dict
+
+	// Extra keeps blocks this package does not model, written back
+	// verbatim so saving never drops what newer Bruno versions add.
+	Extra []RawBlock
+}
+
+// RawBlock is an unmodeled top-level block, content lines as in the
+// file.
+type RawBlock struct {
+	Tag   string
+	Open  byte // '{' or '['
+	Lines []string
 }
 
 // UpperMethod returns the HTTP method for request lines: uppercase of
@@ -117,4 +133,5 @@ type CollectionBru struct {
 	ScriptPostResponse string
 	Tests              string
 	Docs               string
+	Extra              []RawBlock
 }

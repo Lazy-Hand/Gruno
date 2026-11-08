@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"gruno/bru"
+	"gruno/internal/send"
 )
 
 // Collection is a Bruno collection opened on disk.
@@ -28,6 +29,12 @@ type Collection struct {
 	Requests     []*BruRequest
 	Environments []*bru.Environment
 	ActiveEnv    string // last-used environment name, persisted in bruno.json
+
+	// Proxy and ClientCerts come from bruno.json, certificate paths as
+	// stored; ClientCertsOn is its clientCertificates.enabled.
+	Proxy         send.ProxySettings
+	ClientCerts   []send.ClientCert
+	ClientCertsOn bool
 }
 
 // Folder is a directory inside the collection; Path is relative to the
@@ -76,6 +83,10 @@ func OpenCollection(root string) (*Collection, error) {
 	if data, err := os.ReadFile(filepath.Join(root, "bruno.json")); err == nil {
 		if err := json.Unmarshal(data, &meta); err != nil {
 			return nil, fmt.Errorf("bruno.json: %w", err)
+		}
+		if o, err := parseOrderedJSON(data); err == nil {
+			c.Proxy = parseProxy(o)
+			c.ClientCerts, c.ClientCertsOn = parseClientCerts(o)
 		}
 	}
 	c.Name = meta.Name
@@ -342,24 +353,7 @@ func (c *Collection) RenameCollection(name string) error {
 		return nil
 	}
 	c.Name = name
-	path := filepath.Join(c.Root, "bruno.json")
-	var meta brunoMeta
-	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &meta)
-	}
-	meta.Name = name
-	if meta.Version == "" {
-		meta.Version = "1"
-	}
-	if meta.Type == "" {
-		meta.Type = "collection"
-	}
-	meta.ActiveEnv = c.ActiveEnv
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(path, data)
+	return c.updateBrunoJSON(func(o *orderedJSON) error { return o.set("name", name) })
 }
 
 // DeleteEnvironment removes the environment file and unregisters it.
@@ -507,20 +501,13 @@ func (c *Collection) AddEnvironment(name string) (*bru.Environment, error) {
 // SetActiveEnv persists the last-chosen environment in bruno.json.
 func (c *Collection) SetActiveEnv(name string) error {
 	c.ActiveEnv = name
-	path := filepath.Join(c.Root, "bruno.json")
-	var meta brunoMeta
-	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &meta)
-	}
-	meta.ActiveEnv = name
-	if meta.Name == "" {
-		meta = brunoMeta{Version: "1", Name: c.Name, Type: "collection", ActiveEnv: name}
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(path, data)
+	return c.updateBrunoJSON(func(o *orderedJSON) error {
+		if name == "" {
+			o.del("activeEnvironment")
+			return nil
+		}
+		return o.set("activeEnvironment", name)
+	})
 }
 
 // folderByPath returns the folder at rel or nil.

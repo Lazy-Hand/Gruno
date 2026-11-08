@@ -12,27 +12,24 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/egoist/mygo/netproxy"
 )
 
-// HTTPService holds the shared client. Transport follows the system
-// proxy; TLS uses system trust with no "ignore certificate" switch.
+// HTTPService sends requests. Each send gets a client for its
+// Settings; transports are shared between sends with equal TLS and
+// proxy settings, so connections are reused.
 type HTTPService struct {
-	client *http.Client
-	tokens tokenCache
+	transports transportCache
+	tokens     tokenCache
 }
 
-// newHTTPService builds the service with in-memory dependencies only.
+// NewHTTPService builds the service with in-memory dependencies only.
 func NewHTTPService() *HTTPService {
-	return &HTTPService{client: &http.Client{
-		Transport: netproxy.Transport(),
-		Timeout:   30 * time.Second,
-	}}
+	return &HTTPService{}
 }
 
 // Send executes the request: onHead receives the head once, errors are
@@ -50,12 +47,15 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		}
 	}
 
+	resolver := newVarResolver(input.Scopes...)
+	clientFor := func(u *url.URL) (*http.Client, error) { return s.clientFor(input.Settings, u, resolver) }
+
 	var notes []string
 	var attach func(*http.Request) error
 	if input.Request.Auth.Mode == AuthOAuth2 {
 		var note string
 		var err error
-		attach, note, err = s.oauth2Attach(ctx, input)
+		attach, note, err = s.oauth2Attach(ctx, input, clientFor)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fail(classifyDoError(ctx, ctx.Err()), err.Error()), nil
@@ -75,7 +75,12 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		}
 	}
 
-	resp, err := s.client.Do(req)
+	client, err := clientFor(req.URL)
+	if err != nil {
+		return fail(ErrInvalidReq, err.Error()), nil
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fail(classifyDoError(ctx, err), sanitizeRequestError(err)), nil
 	}
@@ -88,7 +93,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		} else if retry != nil {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
-			resp, err = s.client.Do(retry)
+			resp, err = client.Do(retry)
 			if err != nil {
 				return fail(classifyDoError(ctx, err), sanitizeRequestError(err)), nil
 			}
