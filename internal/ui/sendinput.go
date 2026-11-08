@@ -39,7 +39,9 @@ func bruAuthSpec(sel string, r *BruRequest, c *Collection) send.AuthSpec {
 	case "digest":
 		return send.AuthSpec{Mode: send.AuthDigest,
 			Username: get(req.AuthDigest, "username"), Password: get(req.AuthDigest, "password")}
-	case "awsv4", "wsse", "ntlm", "oauth2":
+	case "oauth2":
+		return oauth2AuthSpec(req.AuthOAuth2)
+	case "awsv4", "wsse", "ntlm":
 		return send.AuthSpec{Mode: send.AuthMode(sel)}
 	case "inherit":
 		return collectionAuthSpec(c, r)
@@ -81,6 +83,8 @@ func cbAuthSpec(cb *bru.CollectionBru) send.AuthSpec {
 	case "digest":
 		return send.AuthSpec{Mode: send.AuthDigest,
 			Username: get(cb.AuthDigest, "username"), Password: get(cb.AuthDigest, "password")}
+	case "oauth2":
+		return oauth2AuthSpec(cb.AuthOAuth2)
 	}
 	return send.AuthSpec{Mode: send.AuthNone}
 }
@@ -407,4 +411,35 @@ func (c *Collection) applyEnvSets(v *script.Vars) error {
 		return c.SaveEnvironment(env)
 	}
 	return nil
+}
+
+// oauth2AuthSpec maps an auth:oauth2 block. Bruno's defaults apply to
+// missing keys: Bearer prefix, header placement, credentials in the
+// body, token fetched and refreshed automatically.
+func oauth2AuthSpec(d bru.Dict) send.AuthSpec {
+	prefix, ok := d.Get("token_header_prefix")
+	if !ok {
+		prefix = "Bearer"
+	}
+	flag := func(k string) bool {
+		v, ok := d.Get(k)
+		return !ok || strings.TrimSpace(v) != "false"
+	}
+	return send.AuthSpec{Mode: send.AuthOAuth2, OAuth2: &send.OAuth2Spec{
+		GrantType:            orDefaultS(get(d, "grant_type"), "client_credentials"),
+		AccessTokenURL:       get(d, "access_token_url"),
+		RefreshTokenURL:      get(d, "refresh_token_url"),
+		ClientID:             get(d, "client_id"),
+		ClientSecret:         get(d, "client_secret"),
+		Scope:                get(d, "scope"),
+		Username:             get(d, "username"),
+		Password:             get(d, "password"),
+		CredentialsPlacement: orDefaultS(get(d, "credentials_placement"), "body"),
+		CredentialsID:        orDefaultS(get(d, "credentials_id"), "credentials"),
+		TokenPlacement:       orDefaultS(get(d, "token_placement"), "header"),
+		TokenHeaderPrefix:    prefix,
+		TokenQueryKey:        orDefaultS(get(d, "token_query_key"), "access_token"),
+		AutoFetch:            flag("auto_fetch_token"),
+		AutoRefresh:          flag("auto_refresh_token"),
+	}}
 }

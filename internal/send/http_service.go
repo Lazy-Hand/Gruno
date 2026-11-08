@@ -24,6 +24,7 @@ import (
 // proxy; TLS uses system trust with no "ignore certificate" switch.
 type HTTPService struct {
 	client *http.Client
+	tokens tokenCache
 }
 
 // newHTTPService builds the service with in-memory dependencies only.
@@ -49,9 +50,29 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		}
 	}
 
+	var notes []string
+	var attach func(*http.Request) error
+	if input.Request.Auth.Mode == AuthOAuth2 {
+		var note string
+		var err error
+		attach, note, err = s.oauth2Attach(ctx, input)
+		if err != nil {
+			if ctx.Err() != nil {
+				return fail(classifyDoError(ctx, ctx.Err()), err.Error()), nil
+			}
+			return fail(ErrAuth, err.Error()), nil
+		}
+		notes = append(notes, note)
+	}
+
 	req, err := prepareRequest(ctx, input)
 	if err != nil {
 		return fail(ErrInvalidReq, err.Error()), nil
+	}
+	if attach != nil {
+		if err := attach(req); err != nil {
+			return fail(ErrAuth, err.Error()), nil
+		}
 	}
 
 	resp, err := s.client.Do(req)
@@ -103,6 +124,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		SizeBytes:  int64(len(data)),
 		Truncated:  truncated,
 		DurationMs: elapsed(),
+		Notes:      notes,
 	}, nil
 }
 

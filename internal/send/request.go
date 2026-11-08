@@ -459,6 +459,9 @@ func applyAuth(r *varResolver, a AuthSpec, req *http.Request, manualHeaders, man
 		default:
 			return fmt.Errorf("未知 API Key 位置 %q", a.Location)
 		}
+	case AuthOAuth2:
+		// The token is fetched and attached by HTTPService.Send.
+		return nil
 	case AuthDigest:
 		// Digest needs the server's 401 challenge; the send layer retries
 		// with the computed response after the first round.

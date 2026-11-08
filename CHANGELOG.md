@@ -16,6 +16,10 @@
   editor and its value stays on this Mac, encrypted, with the key in
   the Keychain; the .bru file keeps only the name, as Bruno does.
   Secret values resolve in requests and scripts
+- OAuth2 auth for requests and collections: client_credentials and
+  password grants, token cached and refreshed automatically, sent in
+  the Authorization header or the URL; the timeline says whether a
+  token was fetched, refreshed or reused
 
 ## [0.1.2] - 2026-11-07
 

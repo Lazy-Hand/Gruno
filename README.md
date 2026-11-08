@@ -9,7 +9,7 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 - Sends requests over Go's `net/http` with `{{var}}` resolution, lowest precedence first: `{{process.env.X}}` (collection `.env`, then the OS) → collection vars → folder vars (outer→inner) → active environment → request `vars:pre-request` → runtime vars (`bru.setVar`).
 - Environment secrets: a variable marked **Secret** in the environment editor is listed in the file's `vars:secret` block by name only; its value is sealed with AES-256-GCM in `PathUserData/env-secrets.json`, under a key kept in the macOS Keychain. Secrets resolve like other environment variables, and `bru.setEnvVar` on a secret updates the stored value (`{persist: true}`).
 - Collection/folder headers apply to every request unless a request header of the same name overrides them.
-- Auth: none / inherit / basic / bearer / apikey / digest (two-round RFC 7616 MD5). OAuth2/AWSv4/WSSE/NTLM parse and keep their block data but are not yet executed.
+- Auth: none / inherit / basic / bearer / apikey / digest (two-round RFC 7616 MD5) / OAuth2 (`client_credentials` and `password` grants; credentials in the body or a Basic header; token in the `Authorization` header with a prefix or in the URL; tokens cached for the session, refreshed with `refresh_token` when they expire, "清除缓存的 token" forgets them). AWSv4/WSSE/NTLM and the OAuth2 `authorization_code` grant parse and keep their block data but are not yet executed.
 - Bodies: none, json, text, xml, form-urlencoded, multipart-form, graphql (sent as `{query, variables}` JSON).
 - Scripts run on [goja](https://github.com/dop251/goja): pre-request scripts (collection → folders → request) may change the request before variables resolve; after the response come `vars:post-response`, post-response scripts, the `assert` block and `tests` (request → folders → collection). The response pane's **Tests** tab shows results, script errors and console output. A pre-request script that throws stops the send.
 - Script API: `req` (get/set URL, method, headers, body), `res` (`status`, `headers`, parsed `body`, `res('a.b[0]')`, getters), `bru` (`get/setVar`, `get/setEnvVar` with `{persist: true}`, collection/folder/request var getters, `interpolate`, `getProcessEnv`, `sleep`), `test()` (sync or async), chai-style `expect`, `console.*`. Each phase is capped at 10 s.
@@ -56,5 +56,5 @@ go test ./...
 ## Not yet (scope of this iteration)
 
 - In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`, and runner-only calls such as `bru.setNextRequest` (logged and ignored).
-- OAuth2/AWSv4/WSSE/NTLM request signing.
+- OAuth2 `authorization_code` (browser callback); AWSv4/WSSE/NTLM signing.
 - Collection runner, codegen, Postman/Insomnia import.

@@ -99,6 +99,8 @@ type app struct {
 	folderOpen map[string]bool
 	methodOpen bool
 	revealAuth map[string]bool
+	// oauth2Cleared notes the token cache was just cleared.
+	oauth2Cleared bool
 	mdOpts     markdown.Options
 }
 
@@ -408,6 +410,7 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 		return
 	}
 	a.syncFromUI(br, ts)
+	a.oauth2Cleared = false
 	input := a.coll.sendInputOf(br)
 	vars := a.coll.scriptVarsOf(br, a.runtimeVars, a.secretPairs(a.coll.activeEnvironment()))
 	scripts := a.coll.scriptsOf(br)
@@ -1818,7 +1821,9 @@ func (a *app) authEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 		a.authAPIKeyFields(c, br, br.Path, &r.AuthAPIKey, func() { a.save(br) })
 	case "digest":
 		a.authFields(c, br, br.Path, &r.AuthDigest, func() { a.save(br) }, "username", "password")
-	case "oauth2", "awsv4", "wsse", "ntlm":
+	case "oauth2":
+		a.oauth2Fields(c, br, br.Path, &r.AuthOAuth2, func() { a.save(br) })
+	case "awsv4", "wsse", "ntlm":
 		ui.Text(c, "该认证类型暂不支持编辑参数").TextColor(t.TextMuted)
 	case "inherit":
 		eff := collectionAuthSpec(a.coll, br)
@@ -1874,7 +1879,7 @@ func (a *app) authFields(c *ui.Context, br *BruRequest, keyPrefix string, d *bru
 func (a *app) authFieldRow(c *ui.Context, br *BruRequest, keyPrefix string, d *bru.Dict, k string, secret bool, onSave func()) {
 	fieldKey := keyPrefix + "-auth-" + k
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, k).Width(90).FontSize(12)
+		ui.Text(c, k).Width(authLabelWidth).FontSize(12)
 		v := dictValue(*d, k)
 		inp := ui.TextInput(c.Key(fieldKey), &v).Grow(1).Placeholder(k)
 		if secret && !a.revealAuth[fieldKey] {
@@ -2066,6 +2071,9 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					}
 					if res != nil {
 						ui.Box(c).Height(6)
+						for _, n := range res.Notes {
+							ui.Textf(c, "* %s", n).FontSize(12).TextColor(t.TextMuted)
+						}
 						if res.ErrorCode != "" {
 							ui.Textf(c, "* 错误 (%s): %s (%.1f ms)", res.ErrorCode, res.ErrorMessage, res.DurationMs).FontSize(12).TextColor(t.Danger)
 						} else {
@@ -2136,7 +2144,7 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 					}, nil)
 				case 1:
 					mode := orDefaultS(dot.Auth, "none")
-					collAuthKinds := []string{"none", "basic", "bearer", "apikey", "digest"}
+					collAuthKinds := []string{"none", "basic", "bearer", "apikey", "digest", "oauth2"}
 					ui.Row(c).Gap(8).Padding(0, 0, 8, 0).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, "集合默认认证").Bold().FontSize(12)
 						if ui.Select(c.Key("coll-auth-mode"), &mode, collAuthKinds).Changed() {
@@ -2155,6 +2163,8 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 						a.authAPIKeyFields(c, nil, "coll", &dot.AuthAPIKey, func() { a.coll.SaveCollectionBru() })
 					case "digest":
 						a.authFields(c, nil, "coll", &dot.AuthDigest, func() { a.coll.SaveCollectionBru() }, "username", "password")
+					case "oauth2":
+						a.oauth2Fields(c, nil, "coll", &dot.AuthOAuth2, func() { a.coll.SaveCollectionBru() })
 					}
 				case 2:
 					a.dictTableCustom(c, &dot.Vars, "Collection Variables", "coll-vars", func() {

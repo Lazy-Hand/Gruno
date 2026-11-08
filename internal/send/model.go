@@ -40,6 +40,7 @@ const (
 	AuthAPIKey  AuthMode = "apikey"
 	AuthDigest  AuthMode = "digest"
 	AuthInherit AuthMode = "inherit"
+	AuthOAuth2  AuthMode = "oauth2"
 )
 
 // AuthLocation is where an API key is attached.
@@ -60,6 +61,7 @@ type AuthSpec struct {
 	Key      string       `json:"key"`
 	Value    string       `json:"value"`
 	Location AuthLocation `json:"location"`
+	OAuth2   *OAuth2Spec  `json:"oauth2,omitempty"`
 }
 
 // RequestData is the editable request: method, URL template and the
@@ -114,6 +116,7 @@ const (
 	ErrNetwork    ErrorCode = "network"
 	ErrBodyRead   ErrorCode = "body-read"
 	ErrScript     ErrorCode = "script"
+	ErrAuth       ErrorCode = "auth"
 )
 
 // ResponseResult is the final outcome of a send, body included.
@@ -125,4 +128,7 @@ type ResponseResult struct {
 	DurationMs   float64   `json:"durationMs"`
 	ErrorCode    ErrorCode `json:"errorCode"`
 	ErrorMessage string    `json:"errorMessage"`
+	// Notes are send steps worth showing in the timeline, such as
+	// where an OAuth2 token came from.
+	Notes []string `json:"notes,omitempty"`
 }
