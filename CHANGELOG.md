@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,
   folder and request level, with Bruno's req/res/bru API on a built-in
