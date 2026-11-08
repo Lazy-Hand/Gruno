@@ -5,9 +5,11 @@ package ui
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 
 	"gruno/bru"
+	"gruno/internal/script"
 	"gruno/internal/send"
 )
 
@@ -284,4 +286,125 @@ func syncPathParamsFromURL(r *bru.Request) {
 		}
 	}
 	r.ParamsPath = next
+}
+
+// scriptVarsOf builds the variable scopes a send's scripts see, from
+// the same sources as varScopes plus the session's runtime variables.
+// Env and Runtime are copies: scripts change them, the UI applies them
+// back on its own thread.
+func (c *Collection) scriptVarsOf(r *BruRequest, runtime []script.RuntimeVar) *script.Vars {
+	v := &script.Vars{
+		ProcessEnv:     script.LoadDotEnv(filepath.Join(c.Root, ".env")),
+		EnvName:        c.ActiveEnv,
+		CollectionName: c.Name,
+		Runtime:        append([]script.RuntimeVar(nil), runtime...),
+	}
+	if c.Dot != nil {
+		v.Collection = dictPairs(c.Dot.Vars)
+	}
+	for _, f := range c.folderChain(r) {
+		v.Folder = append(v.Folder, dictPairs(f.Bru.Vars)...)
+	}
+	if env := c.activeEnvironment(); env != nil {
+		v.Env = dictPairs(env.Vars)
+	}
+	if r != nil {
+		v.Request = dictPairs(r.Req.VarsPreRequest)
+	}
+	return v
+}
+
+// folderChain returns r's folders that have a folder.bru, outermost
+// first.
+func (c *Collection) folderChain(r *BruRequest) []*Folder {
+	if r == nil || r.Folder == "" {
+		return nil
+	}
+	var out []*Folder
+	parts := strings.Split(r.Folder, "/")
+	for i := range parts {
+		if f := c.folderByPath(strings.Join(parts[:i+1], "/")); f != nil && f.Bru != nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func (c *Collection) activeEnvironment() *bru.Environment {
+	for _, e := range c.Environments {
+		if e.Name == c.ActiveEnv {
+			return e
+		}
+	}
+	return nil
+}
+
+// requestScripts are the script blocks of one send, in run order:
+// pre-request outermost first (collection, folders, request), then
+// post-response and tests innermost first, as Bruno's default
+// "sandwich" flow runs them.
+type requestScripts struct {
+	Pre, Post, Tests []script.Script
+}
+
+func (c *Collection) scriptsOf(r *BruRequest) requestScripts {
+	type src struct {
+		label           string
+		pre, post, test string
+	}
+	var chain []src
+	if c.Dot != nil {
+		chain = append(chain, src{"集合", c.Dot.ScriptPreRequest, c.Dot.ScriptPostResponse, c.Dot.Tests})
+	}
+	for _, f := range c.folderChain(r) {
+		chain = append(chain, src{"目录 " + f.Path, f.Bru.ScriptPreRequest, f.Bru.ScriptPostResponse, f.Bru.Tests})
+	}
+	chain = append(chain, src{"请求", r.Req.ScriptPreRequest, r.Req.ScriptPostResponse, r.Req.Tests})
+
+	var out requestScripts
+	for _, s := range chain {
+		out.Pre = append(out.Pre, script.Script{Label: s.label, Source: s.pre})
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		out.Post = append(out.Post, script.Script{Label: chain[i].label, Source: chain[i].post})
+		out.Tests = append(out.Tests, script.Script{Label: chain[i].label, Source: chain[i].test})
+	}
+	return out
+}
+
+// applyEnvSets writes a finished send's bru.setEnvVar values into
+// the active environment in memory, and to its file when any call
+// asked for persist.
+func (c *Collection) applyEnvSets(v *script.Vars) error {
+	if len(v.EnvSets) == 0 {
+		return nil
+	}
+	var env *bru.Environment
+	for _, e := range c.Environments {
+		if e.Name == v.EnvName {
+			env = e
+		}
+	}
+	if env == nil {
+		return nil
+	}
+	persist := false
+	for _, s := range v.EnvSets {
+		persist = persist || s.Persist
+		found := false
+		for i := len(env.Vars) - 1; i >= 0; i-- {
+			if env.Vars[i].Key == s.Key && env.Vars[i].Enabled {
+				env.Vars[i].Value = s.Value
+				found = true
+				break
+			}
+		}
+		if !found {
+			env.Vars = append(env.Vars, bru.Entry{Key: s.Key, Value: s.Value, Enabled: true})
+		}
+	}
+	if persist {
+		return c.SaveEnvironment(env)
+	}
+	return nil
 }

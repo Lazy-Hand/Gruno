@@ -484,3 +484,10 @@ func hasHeader(headers []Pair, key string) bool {
 	}
 	return false
 }
+
+// Interpolate resolves every {{name}} in s against scopes (lowest
+// precedence first), as a send would. Scripts use it for
+// bru.interpolate and assertion operands.
+func Interpolate(s string, scopes ...[]Pair) (string, error) {
+	return newVarResolver(scopes...).resolveString(s)
+}

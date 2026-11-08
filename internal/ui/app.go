@@ -23,6 +23,7 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 
 	"gruno/bru"
+	"gruno/internal/script"
 	"gruno/internal/send"
 )
 
@@ -47,6 +48,10 @@ type app struct {
 	recentDirs       []string
 	copyTimer        time.Time
 	envInspector     bool
+
+	// runtimeVars are bru.setVar values; they live for the open
+	// collection, like Bruno's runtime variables.
+	runtimeVars []script.RuntimeVar
 
 	// Modals. Only one shows at a time.
 	newRequest       bool
@@ -118,6 +123,11 @@ type tabState struct {
 	err     error
 	sentAt  time.Time
 	sentReq *send.RequestData
+	// script is what the send's scripts, tests and asserts reported;
+	// scriptVars carries their variable changes until the UI thread
+	// applies them.
+	script     *script.Result
+	scriptVars *script.Vars
 	// savedVers tracks each buffer's version at last flush to disk, so
 	// Modified()'s sticky flag doesn't re-save every frame.
 	savedVers map[*editor.Buffer]uint64
@@ -169,6 +179,7 @@ func (a *app) openCollection(dir string) {
 	a.tabs = map[string]*tabState{}
 	a.folderOpen = map[string]bool{}
 	a.envSel = c.ActiveEnv
+	a.runtimeVars = nil
 	a.initCollectionSettingsEditors()
 	a.saveLastDir(dir)
 }
@@ -387,39 +398,94 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	}
 	a.syncFromUI(br, ts)
 	input := a.coll.sendInputOf(br)
+	vars := a.coll.scriptVarsOf(br, a.runtimeVars)
+	scripts := a.coll.scriptsOf(br)
+	postVars := dictPairs(br.Req.VarsPostResponse)
+	asserts := dictPairs(br.Req.Assert)
 	reqSnap := input.Request
 	ts.mu.Lock()
 	ts.sending = true
 	ts.head = nil
 	ts.result = nil
 	ts.err = nil
+	ts.script = nil
+	ts.scriptVars = nil
 	ts.sentReq = &reqSnap
 	ts.sentAt = time.Now()
 	ts.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	ts.cancel = cancel
-	svc := a.svc
+	svc, services := a.svc, a.services
 	go func() {
+		sess := script.NewSession(vars)
+		finish := func(res *send.ResponseResult, err error) {
+			ts.mu.Lock()
+			ts.sending = false
+			ts.err = err
+			if res != nil {
+				ts.result = res
+				ts.respBuf.Set(respDisplayTextFor(res, ts.respFormat))
+			}
+			ts.script = &sess.Result
+			ts.scriptVars = vars
+			ts.mu.Unlock()
+			services.Invalidate()
+		}
+
+		// Pre-request scripts see and change the unresolved request;
+		// variables resolve afterwards, including any they set.
+		if err := sess.PreRequest(&input.Request, scripts.Pre); err != nil {
+			finish(&send.ResponseResult{BodyKind: send.BodyKindText, ErrorCode: send.ErrScript, ErrorMessage: err.Error()}, nil)
+			return
+		}
+		input.Scopes = vars.Scopes()
+		sent := input.Request
+		ts.mu.Lock()
+		ts.sentReq = &sent
+		ts.mu.Unlock()
+
 		var head send.ResponseHead
 		res, err := svc.Send(ctx, input, func(h send.ResponseHead) error {
 			head = h
 			ts.mu.Lock()
 			ts.head = &head
 			ts.mu.Unlock()
-			a.services.Invalidate()
+			services.Invalidate()
 			return nil
 		})
-		ts.mu.Lock()
-		ts.sending = false
-		ts.err = err
-		if err == nil {
-			r := res
-			ts.result = &r
-			ts.respBuf.Set(respDisplayTextFor(&r, ts.respFormat))
+		if err != nil {
+			finish(nil, err)
+			return
 		}
-		ts.mu.Unlock()
-		a.services.Invalidate()
+		if res.ErrorCode == send.ErrNone {
+			body := ""
+			if res.BodyKind == send.BodyKindText {
+				body = res.BodyText
+			}
+			sess.PostResponse(input.Request, script.Response{
+				Status: head.StatusCode, StatusText: head.StatusText, URL: head.URL,
+				Headers: head.Headers, Body: body, Size: res.SizeBytes, DurationMs: res.DurationMs,
+			}, scripts.Post, postVars, asserts, scripts.Tests)
+		}
+		finish(&res, nil)
 	}()
+}
+
+// applyScriptVars hands a finished send's variable changes to the app
+// on the UI thread: runtime variables replace the app's, environment
+// changes go into the collection.
+func (a *app) applyScriptVars(ts *tabState) {
+	ts.mu.Lock()
+	v := ts.scriptVars
+	ts.scriptVars = nil
+	ts.mu.Unlock()
+	if v == nil || a.coll == nil {
+		return
+	}
+	a.runtimeVars = v.Runtime
+	if err := a.coll.applyEnvSets(v); err != nil {
+		mygo.Dialog.Error("保存环境失败", err.Error())
+	}
 }
 
 // respDisplayText picks the response body text for the editor.
@@ -529,6 +595,9 @@ func methodBgColor(t *ui.Theme, m string) ui.Color {
 func (a *app) view(c *ui.Context) {
 	c.SetTheme(a.resolveTheme(c.Theme()))
 	a.services = c.Services()
+	for _, ts := range a.tabs {
+		a.applyScriptVars(ts)
+	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		if br, ts := a.activeTab(); br != nil {
 			a.syncFromUI(br, ts)
@@ -764,6 +833,7 @@ func (a *app) collectionMenu(m *ui.Menu) {
 		a.open = nil
 		a.active = ""
 		a.tabs = map[string]*tabState{}
+		a.runtimeVars = nil
 		a.saveLastDir("")
 	}
 }
@@ -880,6 +950,7 @@ func (a *app) varsMenu(m *ui.Menu, br *BruRequest, insert func(key string)) {
 	if br != nil {
 		add("本请求变量", br.Req.VarsPreRequest)
 	}
+	add("运行时变量", a.runtimeDict())
 
 	m.Separator()
 	if m.Item("查看环境变量…").Chosen() {
@@ -1840,6 +1911,7 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 	ui.Column(c).Fill().MinWidth(0).Children(func() {
 		ts.mu.Lock()
 		sending, head, res, serr, sentReq, sentAt := ts.sending, ts.head, ts.result, ts.err, ts.sentReq, ts.sentAt
+		sres := ts.script
 		ts.mu.Unlock()
 
 		ui.Row(c).Padding(8, 12).Gap(8).AlignItems(ui.Center).
@@ -1892,7 +1964,7 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 				if head != nil && len(head.Headers) > 0 {
 					headersLabel = fmt.Sprintf("Headers (%d)", len(head.Headers))
 				}
-				ui.Segmented(c, &ts.respSection, "Body", headersLabel, "Timeline")
+				ui.Segmented(c, &ts.respSection, "Body", headersLabel, "Timeline", testsLabel(sres))
 				if ts.respSection == 0 && res != nil && res.BodyKind == send.BodyKindText && res.ErrorCode == "" {
 					if ui.Segmented(c, &ts.respFormat, "Pretty", "Raw").Changed() {
 						ts.mu.Lock()
@@ -1926,6 +1998,7 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					ts.head = nil
 					ts.result = nil
 					ts.err = nil
+					ts.script = nil
 					ts.respBuf.Set("")
 					ts.mu.Unlock()
 				}
@@ -1986,6 +2059,8 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					}
 				})
 			})
+		} else if ts.respSection == 3 && (head != nil || res != nil) {
+			a.testsPane(c, sres)
 		} else if head == nil && res == nil && !sending {
 			// Clean empty state matching Bruno
 			ui.Column(c).Grow(1).Center().Gap(8).Children(func() {
@@ -2152,6 +2227,21 @@ func (a *app) envInspectorModal(c *ui.Context) {
 				}
 			} else {
 				ui.Text(c, "当前环境无变量").TextColor(t.TextMuted).FontSize(11).Padding(4, 0)
+			}
+
+			if len(a.runtimeVars) > 0 {
+				ui.Row(c).AlignItems(ui.Center).Padding(8, 0, 4, 0).Children(func() {
+					ui.Text(c, "运行时变量 (bru.setVar)").Bold().FontSize(12).Grow(1)
+					if ui.Button(c, "清空").Padding(2, 8).Clicked() {
+						a.runtimeVars = nil
+					}
+				})
+				for _, v := range a.runtimeVars {
+					ui.Row(c).Gap(8).Children(func() {
+						ui.Text(c, v.Key).Bold().Width(140)
+						ui.Text(c, v.Value).Grow(1).Selectable()
+					})
+				}
 			}
 
 			if a.coll != nil && a.coll.Dot != nil && len(a.coll.Dot.Vars) > 0 {
@@ -2441,4 +2531,116 @@ func sortedCopy(s []string) []string {
 	out := append([]string{}, s...)
 	sort.Strings(out)
 	return out
+}
+
+// testsLabel is the response "Tests" segment: passed/total once any
+// test or assertion ran.
+func testsLabel(r *script.Result) string {
+	if r == nil {
+		return "Tests"
+	}
+	total := len(r.Tests) + len(r.Asserts)
+	if total == 0 {
+		if len(r.Errors) > 0 {
+			return "Tests (!)"
+		}
+		return "Tests"
+	}
+	passed := 0
+	for _, t := range r.Tests {
+		if t.Passed {
+			passed++
+		}
+	}
+	for _, t := range r.Asserts {
+		if t.Passed {
+			passed++
+		}
+	}
+	return fmt.Sprintf("Tests (%d/%d)", passed, total)
+}
+
+// testsPane lists script errors, test and assertion outcomes and the
+// console output of the last send.
+func (a *app) testsPane(c *ui.Context, r *script.Result) {
+	t := c.Theme()
+	ui.Scroll(c).Grow(1).Padding(10, 14).Children(func() {
+		ui.Column(c).Gap(10).Selectable().Children(func() {
+			if r == nil || !r.Ran() {
+				ui.Text(c, "本次发送没有运行脚本、测试或断言").FontSize(12).TextColor(t.TextMuted)
+				return
+			}
+			if len(r.Errors) > 0 {
+				ui.Column(c).Gap(4).Children(func() {
+					ui.Text(c, "脚本错误").Bold().FontSize(12)
+					for _, e := range r.Errors {
+						ui.Row(c).Gap(6).Padding(6, 8).Background(t.Danger.Alpha(0.1)).Radius(4).Children(func() {
+							ui.Icon(c, iconX).Size(13, 13).TextColor(t.Danger)
+							ui.Text(c, e.Error()).FontSize(12).TextColor(t.Danger).Grow(1)
+						})
+					}
+				})
+			}
+			results := func(title string, list []script.TestResult) {
+				if len(list) == 0 {
+					return
+				}
+				passed := 0
+				for _, tr := range list {
+					if tr.Passed {
+						passed++
+					}
+				}
+				ui.Column(c).Gap(4).Children(func() {
+					ui.Textf(c, "%s  %d/%d 通过", title, passed, len(list)).Bold().FontSize(12)
+					for _, tr := range list {
+						ui.Row(c).Gap(6).Padding(3, 4).AlignItems(ui.Start).Children(func() {
+							if tr.Passed {
+								ui.Icon(c, iconCheck).Size(13, 13).TextColor(t.Success)
+							} else {
+								ui.Icon(c, iconX).Size(13, 13).TextColor(t.Danger)
+							}
+							ui.Column(c).Gap(2).Grow(1).Children(func() {
+								ui.Text(c, tr.Name).FontSize(12)
+								if !tr.Passed && tr.Error != "" {
+									ui.Text(c, tr.Error).FontSize(11.5).TextColor(t.Danger)
+								}
+							})
+						})
+					}
+				})
+			}
+			results("Tests", r.Tests)
+			results("Assertions", r.Asserts)
+			if len(r.Logs) > 0 {
+				ui.Column(c).Gap(2).Children(func() {
+					ui.Text(c, "Console").Bold().FontSize(12)
+					for _, l := range r.Logs {
+						col := t.Text
+						switch l.Level {
+						case "warn":
+							col = t.Warning
+						case "error":
+							col = t.Danger
+						case "debug":
+							col = t.TextMuted
+						}
+						ui.Row(c).Gap(8).Children(func() {
+							ui.Text(c, l.Phase).FontSize(11).TextColor(t.TextMuted).Width(90)
+							ui.Text(c, l.Text).FontSize(12).TextColor(col).Grow(1)
+						})
+					}
+				})
+			}
+		})
+	})
+}
+
+// runtimeDict shows runtime variables as a dictionary for the menus.
+func (a *app) runtimeDict() bru.Dict {
+	d := make(bru.Dict, 0, len(a.runtimeVars))
+	for _, v := range a.runtimeVars {
+		d = append(d, bru.Entry{Key: v.Key, Value: v.Value, Enabled: true})
+	}
+	return d
 }

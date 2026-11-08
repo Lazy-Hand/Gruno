@@ -6,11 +6,12 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 
 - Opens **Bruno collections** directly: `bruno.json`, `collection.bru`, `folder.bru`, `environments/*.bru`, and one `.bru` file per request. Folders are directories on disk; everything is Git-diffable.
 - Edits write the `.bru` file **live** — the file on disk is the truth, like Bruno itself.
-- Sends requests over Go's `net/http` with `{{var}}` resolution in Bruno's precedence order: collection vars → folder vars (outer→inner) → active environment → request `vars:pre-request`.
+- Sends requests over Go's `net/http` with `{{var}}` resolution, lowest precedence first: `{{process.env.X}}` (collection `.env`, then the OS) → collection vars → folder vars (outer→inner) → active environment → request `vars:pre-request` → runtime vars (`bru.setVar`).
 - Collection/folder headers apply to every request unless a request header of the same name overrides them.
 - Auth: none / inherit / basic / bearer / apikey / digest (two-round RFC 7616 MD5). OAuth2/AWSv4/WSSE/NTLM parse and keep their block data but are not yet executed.
 - Bodies: none, json, text, xml, form-urlencoded, multipart-form, graphql (sent as `{query, variables}` JSON).
-- Scripts/tests/docs/assert blocks round-trip through the editor; pre-request/post-response scripts are kept but not executed (no JS runtime in this iteration).
+- Scripts run on [goja](https://github.com/dop251/goja): pre-request scripts (collection → folders → request) may change the request before variables resolve; after the response come `vars:post-response`, post-response scripts, the `assert` block and `tests` (request → folders → collection). The response pane's **Tests** tab shows results, script errors and console output. A pre-request script that throws stops the send.
+- Script API: `req` (get/set URL, method, headers, body), `res` (`status`, `headers`, parsed `body`, `res('a.b[0]')`, getters), `bru` (`get/setVar`, `get/setEnvVar` with `{persist: true}`, collection/folder/request var getters, `interpolate`, `getProcessEnv`, `sleep`), `test()` (sync or async), chai-style `expect`, `console.*`. Each phase is capped at 10 s.
 
 ## Layout
 
@@ -22,6 +23,7 @@ request.go    variable resolution + *http.Request construction
 http_service.go  send + response classification (30s timeout, 10MB body cap)
 digest.go     HTTP Digest auth two-round exchange
 app.go        native UI: sidebar tree, tabs, request editor, response pane (Bruno layout: sections Params/Body/Headers/Auth/Vars/Script/Tests/Assert/Docs)
+internal/script/  goja runtime: Bruno script API, tests, assert operators
 main.go       window + single-instance + app menu
 ```
 
@@ -41,7 +43,7 @@ choice is remembered in `PathUserData/gruno.json`.
 ## Tests
 
 ```sh
-go test . ./bru
+go test ./...
 ```
 
 - `bru/` — parser/serializer round-trips, dict/text/array blocks, disabled `~` rows.
@@ -51,6 +53,7 @@ go test . ./bru
 
 ## Not yet (scope of this iteration)
 
-- JS script execution (scripts/tests parse and edit; a JS engine like goja is the next step).
+- In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`, and runner-only calls such as `bru.setNextRequest` (logged and ignored).
+- Secret environment values (only their names are kept).
 - OAuth2/AWSv4/WSSE/NTLM request signing.
 - Collection runner, codegen, Postman/Insomnia import.

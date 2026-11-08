@@ -113,6 +113,7 @@ const (
 	ErrTimeout    ErrorCode = "timeout"
 	ErrNetwork    ErrorCode = "network"
 	ErrBodyRead   ErrorCode = "body-read"
+	ErrScript     ErrorCode = "script"
 )
 
 // ResponseResult is the final outcome of a send, body included.

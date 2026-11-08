@@ -138,11 +138,7 @@ func TestSendRoundTrip(t *testing.T) {
 	a.openTab(br)
 	ts := a.tabState(br)
 	a.send(br, ts)
-	// send is synchronous in tests: wait for the goroutine.
-	deadline := time.Now().Add(5 * time.Second)
-	for ts.sending && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitSent(t, ts)
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	if ts.err != nil {
@@ -308,10 +304,7 @@ func TestResponsePrettyRawAndTimeline(t *testing.T) {
 	a.openTab(br)
 	ts := a.tabState(br)
 	a.send(br, ts)
-	deadline := time.Now().Add(5 * time.Second)
-	for ts.sending && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitSent(t, ts)
 
 	tt := ui.NewTester(a.view, 1200, 800)
 	if !tt.HasText("Pretty") || !tt.HasText("Raw") || !tt.HasText("Timeline") {
@@ -326,5 +319,110 @@ func TestResponsePrettyRawAndTimeline(t *testing.T) {
 	}
 	if !tt.HasText("* 接收完成: 17 B") && !strings.Contains(strings.Join(tt.Texts(), " "), "接收完成") {
 		t.Fatalf("timeline details missing: %q", tt.Texts())
+	}
+}
+
+func waitSent(t *testing.T, ts *tabState) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ts.mu.Lock()
+		done := !ts.sending
+		ts.mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("send did not finish")
+}
+
+func TestScriptsTestsAndAssertsRun(t *testing.T) {
+	var gotAuth, gotTrace string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotTrace = r.URL.Query().Get("trace")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"token":"t-123","items":[1,2,3]}`))
+	}))
+	defer srv.Close()
+
+	a := openedApp(t)
+	env, err := a.coll.AddEnvironment("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Vars = bru.Dict{{Key: "host", Value: srv.URL, Enabled: true}}
+	a.coll.SetActiveEnv("dev")
+
+	br, _ := a.coll.AddRequest("", "Login")
+	br.Req.URL = "{{host}}/login"
+	br.Req.ScriptPreRequest = `req.setHeader("Authorization", "Bearer " + (bru.getVar("token") || "none"));
+req.setUrl(req.getUrl() + "?trace={{traceId}}");
+bru.setVar("traceId", "abc");`
+	br.Req.ScriptPostResponse = `bru.setVar("token", res.body.token); bru.setEnvVar("lastStatus", String(res.status)); console.log("got", res.body.items.length)`
+	br.Req.Tests = `test("ok", () => expect(res.status).to.equal(200));
+test("items", () => expect(res.body.items).to.have.lengthOf(4));`
+	br.Req.Assert = bru.Dict{{Key: "res.body.token", Value: "startsWith t-", Enabled: true}}
+	if err := a.coll.SaveRequest(br); err != nil {
+		t.Fatal(err)
+	}
+	a.openTab(br)
+	ts := a.tabState(br)
+
+	a.send(br, ts)
+	waitSent(t, ts)
+	a.applyScriptVars(ts)
+	if ts.err != nil || ts.result == nil || ts.result.ErrorCode != "" {
+		t.Fatalf("send: err=%v result=%+v", ts.err, ts.result)
+	}
+	if gotAuth != "Bearer none" || gotTrace != "abc" {
+		t.Fatalf("server saw auth=%q trace=%q", gotAuth, gotTrace)
+	}
+	r := ts.script
+	if len(r.Tests) != 2 || !r.Tests[0].Passed || r.Tests[1].Passed || len(r.Asserts) != 1 || !r.Asserts[0].Passed {
+		t.Fatalf("results %+v", r)
+	}
+	if testsLabel(r) != "Tests (2/3)" {
+		t.Fatalf("label %q", testsLabel(r))
+	}
+	if v, _ := env.Vars.Get("lastStatus"); v != "200" {
+		t.Fatalf("env var not applied: %+v", env.Vars)
+	}
+
+	// Runtime variables carry into the next send.
+	a.send(br, ts)
+	waitSent(t, ts)
+	a.applyScriptVars(ts)
+	if gotAuth != "Bearer t-123" {
+		t.Fatalf("second send auth %q", gotAuth)
+	}
+
+	ts.respSection = 3
+	tt := ui.NewTester(a.view, 1200, 800)
+	for _, want := range []string{"Tests (2/3)", "items", "got 3"} {
+		if !tt.HasText(want) {
+			t.Fatalf("tests pane missing %q: %q", want, tt.Texts())
+		}
+	}
+}
+
+func TestPreRequestScriptErrorStopsSend(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer srv.Close()
+	a := openedApp(t)
+	br, _ := a.coll.AddRequest("", "R")
+	br.Req.URL = srv.URL
+	br.Req.ScriptPreRequest = "throw new Error('boom')"
+	a.openTab(br)
+	ts := a.tabState(br)
+	a.send(br, ts)
+	waitSent(t, ts)
+	if hit {
+		t.Fatal("request was sent despite script error")
+	}
+	if ts.result == nil || ts.result.ErrorCode != "script" || !strings.Contains(ts.result.ErrorMessage, "boom") {
+		t.Fatalf("result %+v", ts.result)
 	}
 }

@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+- Scripts run: pre-request and post-response scripts at collection,
+  folder and request level, with Bruno's req/res/bru API on a built-in
+  JavaScript engine
+- Tests and assertions run after each response; the response pane's
+  new Tests tab shows passed/failed results, script errors and console
+  output
+- Runtime variables (bru.setVar, vars:post-response) carry into later
+  sends and appear in the {} variable menu; bru.setEnvVar updates the
+  active environment, writing it with {persist: true}
+- {{process.env.NAME}} reads the collection's .env file
 
 ## [0.1.2] - 2026-11-07
 
