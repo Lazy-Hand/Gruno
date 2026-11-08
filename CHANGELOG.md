@@ -12,6 +12,10 @@
   sends and appear in the {} variable menu; bru.setEnvVar updates the
   active environment, writing it with {persist: true}
 - {{process.env.NAME}} reads the collection's .env file
+- Environment secrets: mark a variable as Secret in the environment
+  editor and its value stays on this Mac, encrypted, with the key in
+  the Keychain; the .bru file keeps only the name, as Bruno does.
+  Secret values resolve in requests and scripts
 
 ## [0.1.2] - 2026-11-07
 

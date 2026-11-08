@@ -290,9 +290,9 @@ func syncPathParamsFromURL(r *bru.Request) {
 
 // scriptVarsOf builds the variable scopes a send's scripts see, from
 // the same sources as varScopes plus the session's runtime variables.
-// Env and Runtime are copies: scripts change them, the UI applies them
-// back on its own thread.
-func (c *Collection) scriptVarsOf(r *BruRequest, runtime []script.RuntimeVar) *script.Vars {
+// Env (with the environment's secret values) and Runtime are copies:
+// scripts change them, the UI applies them back on its own thread.
+func (c *Collection) scriptVarsOf(r *BruRequest, runtime []script.RuntimeVar, envSecrets []send.Pair) *script.Vars {
 	v := &script.Vars{
 		ProcessEnv:     script.LoadDotEnv(filepath.Join(c.Root, ".env")),
 		EnvName:        c.ActiveEnv,
@@ -306,7 +306,7 @@ func (c *Collection) scriptVarsOf(r *BruRequest, runtime []script.RuntimeVar) *s
 		v.Folder = append(v.Folder, dictPairs(f.Bru.Vars)...)
 	}
 	if env := c.activeEnvironment(); env != nil {
-		v.Env = dictPairs(env.Vars)
+		v.Env = append(dictPairs(env.Vars), envSecrets...)
 	}
 	if r != nil {
 		v.Request = dictPairs(r.Req.VarsPreRequest)

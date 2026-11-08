@@ -24,6 +24,7 @@ import (
 
 	"gruno/bru"
 	"gruno/internal/script"
+	"gruno/internal/secrets"
 	"gruno/internal/send"
 )
 
@@ -53,6 +54,13 @@ type app struct {
 	// collection, like Bruno's runtime variables.
 	runtimeVars []script.RuntimeVar
 
+	// secrets holds environment secret values; nil keeps none (tests).
+	// secretCache has each environment's values once read, secretErr
+	// the last store failure.
+	secrets     *secrets.Store
+	secretCache map[string]map[string]string
+	secretErr   string
+
 	// Modals. Only one shows at a time.
 	newRequest       bool
 	newRequestIn     string
@@ -73,8 +81,9 @@ type app struct {
 	deleteFolder     *Folder
 	deleteFolderOpen bool
 	envEditor        bool
-	envDraft         *bru.Environment
 	envTarget        *bru.Environment
+	envRows          []envRow
+	revealSecret     map[int]bool
 	newEnv           bool
 	newEnvIn         string
 	collSettingsOpen bool
@@ -180,6 +189,8 @@ func (a *app) openCollection(dir string) {
 	a.folderOpen = map[string]bool{}
 	a.envSel = c.ActiveEnv
 	a.runtimeVars = nil
+	a.secretCache = nil
+	a.secretErr = ""
 	a.initCollectionSettingsEditors()
 	a.saveLastDir(dir)
 }
@@ -398,7 +409,7 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	}
 	a.syncFromUI(br, ts)
 	input := a.coll.sendInputOf(br)
-	vars := a.coll.scriptVarsOf(br, a.runtimeVars)
+	vars := a.coll.scriptVarsOf(br, a.runtimeVars, a.secretPairs(a.coll.activeEnvironment()))
 	scripts := a.coll.scriptsOf(br)
 	postVars := dictPairs(br.Req.VarsPostResponse)
 	asserts := dictPairs(br.Req.Assert)
@@ -483,6 +494,9 @@ func (a *app) applyScriptVars(ts *tabState) {
 		return
 	}
 	a.runtimeVars = v.Runtime
+	if err := a.applySecretEnvSets(v); err != nil {
+		mygo.Dialog.Error("保存 Secret 失败", err.Error())
+	}
 	if err := a.coll.applyEnvSets(v); err != nil {
 		mygo.Dialog.Error("保存环境失败", err.Error())
 	}
@@ -834,6 +848,8 @@ func (a *app) collectionMenu(m *ui.Menu) {
 		a.active = ""
 		a.tabs = map[string]*tabState{}
 		a.runtimeVars = nil
+		a.secretCache = nil
+		a.secretErr = ""
 		a.saveLastDir("")
 	}
 }
@@ -854,12 +870,7 @@ func (a *app) envMenu(m *ui.Menu) {
 	for _, e := range a.coll.Environments {
 		env := e
 		if m.Item("编辑 " + e.Name + "…").Chosen() {
-			a.envEditor = true
-			a.envTarget = env
-			draft := *env
-			draft.Vars = append(bru.Dict{}, env.Vars...)
-			draft.Secrets = append([]string{}, env.Secrets...)
-			a.envDraft = &draft
+			a.beginEnvEdit(env)
 		}
 	}
 }
@@ -943,7 +954,11 @@ func (a *app) varsMenu(m *ui.Menu, br *BruRequest, insert func(key string)) {
 	if a.coll != nil {
 		for _, e := range a.coll.Environments {
 			if e.Name == a.coll.ActiveEnv {
-				add("环境变量 "+e.Name, e.Vars)
+				d := append(bru.Dict{}, e.Vars...)
+				for _, p := range a.secretPairs(e) {
+					d = append(d, bru.Entry{Key: p.Key, Value: "••••••", Enabled: p.Enabled})
+				}
+				add("环境变量 "+e.Name, d)
 			}
 		}
 	}
@@ -2219,11 +2234,20 @@ func (a *app) envInspectorModal(c *ui.Context) {
 						ui.Text(c, v.Value).Grow(1).TextColor(col).Selectable()
 					})
 				}
+				vals := a.envSecretValues(activeEnv)
 				for _, s := range activeEnv.Secrets {
+					name, _ := secretName(s)
+					shown := "•••••••• (Secret)"
+					if vals[name] == "" {
+						shown = "(Secret，未设置值)"
+					}
 					ui.Row(c).Gap(8).Children(func() {
-						ui.Text(c, s).Bold().Width(140)
-						ui.Text(c, "•••••••• (Secret)").Grow(1).TextColor(t.TextMuted)
+						ui.Text(c, name).Bold().Width(140)
+						ui.Text(c, shown).Grow(1).TextColor(t.TextMuted)
 					})
+				}
+				if a.secretErr != "" {
+					ui.Text(c, a.secretErr).FontSize(11).TextColor(t.Danger)
 				}
 			} else {
 				ui.Text(c, "当前环境无变量").TextColor(t.TextMuted).FontSize(11).Padding(4, 0)
@@ -2258,12 +2282,7 @@ func (a *app) envInspectorModal(c *ui.Context) {
 				if activeEnv != nil {
 					if ui.Button(c, "编辑当前环境…").Clicked() {
 						a.envInspector = false
-						a.envEditor = true
-						a.envTarget = activeEnv
-						draft := *activeEnv
-						draft.Vars = append(bru.Dict{}, activeEnv.Vars...)
-						draft.Secrets = append([]string{}, activeEnv.Secrets...)
-						a.envDraft = &draft
+						a.beginEnvEdit(activeEnv)
 					}
 				}
 				if ui.PrimaryButton(c, "关闭").Clicked() {
@@ -2447,7 +2466,7 @@ func (a *app) newEnvModal(c *ui.Context) {
 
 func (a *app) envEditorModal(c *ui.Context) {
 	ui.Modal(c, &a.envEditor, func() {
-		if a.envDraft == nil || a.envTarget == nil {
+		if a.envTarget == nil {
 			return
 		}
 		t := c.Theme()
@@ -2461,6 +2480,10 @@ func (a *app) envEditorModal(c *ui.Context) {
 				})
 				if delEnvBtn.Clicked() {
 					a.coll.DeleteEnvironment(a.envTarget)
+					if a.secrets != nil {
+						a.secrets.Delete(a.coll.Root, a.envTarget.Name)
+					}
+					delete(a.secretCache, a.envTarget.Name)
 					if a.envSel == a.envTarget.Name {
 						a.envSel = "No Environment"
 					}
@@ -2468,26 +2491,42 @@ func (a *app) envEditorModal(c *ui.Context) {
 					return
 				}
 			})
-			ui.Text(c, "环境变量 (支持勾选启用/禁用)").FontSize(12).TextColor(t.TextMuted)
-			ui.Scroll(c).MaxHeight(260).Children(func() {
+			ui.Text(c, "环境变量（勾选启用；🔒 标记为 Secret 的值加密保存在本机，不写入 .bru 文件）").FontSize(12).TextColor(t.TextMuted)
+			ui.Scroll(c).MaxHeight(300).Children(func() {
 				ui.Column(c).Gap(6).Children(func() {
-					for i := range a.envDraft.Vars {
+					for i := range a.envRows {
 						i := i
-						e := &a.envDraft.Vars[i]
+						e := &a.envRows[i]
 						rowKey := fmt.Sprintf("env-%s-%d", a.envTarget.Name, i)
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							ui.Checkbox(c.Key(rowKey+"-cb"), &e.Enabled, "")
-							ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(160).Placeholder("Key")
-							ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value")
+							ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(150).Placeholder("Key")
+							inp := ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value")
+							if e.Secret && !a.revealSecret[i] {
+								inp.Password()
+							}
 							a.varButton(c, nil, &e.Value, func(s string) {
-								if i < len(a.envDraft.Vars) && &a.envDraft.Vars[i] == e {
+								if i < len(a.envRows) && &a.envRows[i] == e {
 									e.Value = s
 								}
 							})
+							if e.Secret {
+								eye := iconEye
+								if a.revealSecret[i] {
+									eye = iconEyeOff
+								}
+								eyeBtn := ui.Button(c.Key(rowKey+"-eye"), "").Padding(4, 6).Label("切换显示")
+								eyeBtn.Children(func() { ui.Icon(c, eye).Size(13, 13) })
+								if eyeBtn.Clicked() {
+									a.revealSecret[i] = !a.revealSecret[i]
+								}
+							}
+							ui.Checkbox(c.Key(rowKey+"-secret"), &e.Secret, "Secret")
 							delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除变量")
 							delBtn.Children(func() { ui.Icon(c, iconTrash).Size(13, 13) })
 							if delBtn.Clicked() {
-								a.envDraft.Vars = append(a.envDraft.Vars[:i], a.envDraft.Vars[i+1:]...)
+								a.envRows = append(a.envRows[:i], a.envRows[i+1:]...)
+								a.revealSecret = map[int]bool{}
 							}
 						})
 					}
@@ -2499,15 +2538,19 @@ func (a *app) envEditorModal(c *ui.Context) {
 				ui.Text(c, "添加变量").FontSize(12)
 			})
 			if addVarBtn.Clicked() {
-				a.envDraft.Vars = append(a.envDraft.Vars, bru.Entry{Enabled: true})
+				a.envRows = append(a.envRows, envRow{Enabled: true})
+			}
+			if a.secretErr != "" {
+				ui.Text(c, a.secretErr).FontSize(11).TextColor(t.Danger)
 			}
 			ui.Row(c).Gap(8).Justify(ui.End).Padding(8, 0, 0, 0).Children(func() {
 				if ui.Button(c, "取消").Clicked() {
 					a.envEditor = false
 				}
 				if ui.PrimaryButton(c, "保存").Clicked() {
-					*a.envTarget = *a.envDraft
-					a.coll.SaveEnvironment(a.envTarget)
+					if err := a.saveEnvEdit(); err != nil {
+						mygo.Dialog.Error("保存环境失败", err.Error())
+					}
 					a.envEditor = false
 				}
 			})

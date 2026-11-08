@@ -7,6 +7,7 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 - Opens **Bruno collections** directly: `bruno.json`, `collection.bru`, `folder.bru`, `environments/*.bru`, and one `.bru` file per request. Folders are directories on disk; everything is Git-diffable.
 - Edits write the `.bru` file **live** — the file on disk is the truth, like Bruno itself.
 - Sends requests over Go's `net/http` with `{{var}}` resolution, lowest precedence first: `{{process.env.X}}` (collection `.env`, then the OS) → collection vars → folder vars (outer→inner) → active environment → request `vars:pre-request` → runtime vars (`bru.setVar`).
+- Environment secrets: a variable marked **Secret** in the environment editor is listed in the file's `vars:secret` block by name only; its value is sealed with AES-256-GCM in `PathUserData/env-secrets.json`, under a key kept in the macOS Keychain. Secrets resolve like other environment variables, and `bru.setEnvVar` on a secret updates the stored value (`{persist: true}`).
 - Collection/folder headers apply to every request unless a request header of the same name overrides them.
 - Auth: none / inherit / basic / bearer / apikey / digest (two-round RFC 7616 MD5). OAuth2/AWSv4/WSSE/NTLM parse and keep their block data but are not yet executed.
 - Bodies: none, json, text, xml, form-urlencoded, multipart-form, graphql (sent as `{query, variables}` JSON).
@@ -23,6 +24,7 @@ request.go    variable resolution + *http.Request construction
 http_service.go  send + response classification (30s timeout, 10MB body cap)
 digest.go     HTTP Digest auth two-round exchange
 app.go        native UI: sidebar tree, tabs, request editor, response pane (Bruno layout: sections Params/Body/Headers/Auth/Vars/Script/Tests/Assert/Docs)
+internal/secrets/ encrypted store for environment secret values
 internal/script/  goja runtime: Bruno script API, tests, assert operators
 main.go       window + single-instance + app menu
 ```
@@ -54,6 +56,5 @@ go test ./...
 ## Not yet (scope of this iteration)
 
 - In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`, and runner-only calls such as `bru.setNextRequest` (logged and ignored).
-- Secret environment values (only their names are kept).
 - OAuth2/AWSv4/WSSE/NTLM request signing.
 - Collection runner, codegen, Postman/Insomnia import.

@@ -26,6 +26,7 @@ func Run() {
 	})
 
 	a := newApp()
+	a.secrets = defaultSecretsStore()
 	a.restoreLast()
 	// Sparkle-style update window in native UI: background checks daily,
 	// "Check for Updates…" in the app menu. A no-op in dev builds.
