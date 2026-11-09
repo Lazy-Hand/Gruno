@@ -110,6 +110,9 @@ type app struct {
 	prefsDraft     netPrefs
 	prefsTimeoutIn string
 	certPFX        map[int]bool
+
+	// varFields is the state of each varInput, by field key.
+	varFields map[string]*varFieldState
 	mdOpts     markdown.Options
 }
 
@@ -365,6 +368,8 @@ func (a *app) tabState(br *BruRequest) *tabState {
 	ts.gqlVarsBuf = editor.NewBuffer(br.Req.BodyGraphQLVars)
 	ts.gqlVarsBuf.SetLanguage(editor.LanguageFor("vars.json"))
 	ts.gqlVarsEd = &editor.State{Buffer: ts.gqlVarsBuf}
+	a.attachVarCompletion(ts.bodyEd, br)
+	a.attachVarCompletion(ts.gqlVarsEd, br)
 	ts.respBuf = editor.NewBuffer("")
 	ts.respBuf.SetLanguage(editor.LanguageFor("body.json"))
 	ts.respEd = &editor.State{Buffer: ts.respBuf, ReadOnly: true}
@@ -901,103 +906,6 @@ func (a *app) envMenu(m *ui.Menu) {
 	}
 }
 
-// insertVarText returns s with {{key}} inserted: a trailing "{{" or
-// "{{prefix" typed in anticipation completes instead of duplicating.
-func insertVarText(s, key string) string {
-	tok := "{{" + key + "}}"
-	if i := strings.LastIndex(s, "{{"); i >= 0 && !strings.Contains(s[i+2:], "}") {
-		return s[:i] + tok
-	}
-	return s + tok
-}
-
-// varButton renders the small {} trigger Apifox puts on each input;
-// choosing a variable inserts {{name}} into the bound field.
-func (a *app) varButton(c *ui.Context, br *BruRequest, v *string, set func(string)) ui.Element {
-	btn := ui.Button(c, "").Padding(3, 5).Gap(0).Label("插入变量")
-	btn.Children(func() {
-		ui.Icon(c, iconBraces).Size(13, 13).TextColor(c.Theme().TextMuted)
-	})
-	btn.Menu(func(m *ui.Menu) {
-		a.varsMenu(m, br, func(key string) { set(insertVarText(*v, key)) })
-	})
-	return btn
-}
-
-// varEditorButton is varButton for code editors: choosing a variable
-// writes {{name}} at the caret, as typing it, preserving undo.
-func (a *app) varEditorButton(c *ui.Context, br *BruRequest, st *editor.State) ui.Element {
-	btn := ui.Button(c, "").Padding(3, 5).Gap(0).Label("插入变量")
-	btn.Children(func() {
-		ui.Icon(c, iconBraces).Size(13, 13).TextColor(c.Theme().TextMuted)
-	})
-	btn.Menu(func(m *ui.Menu) {
-		a.varsMenu(m, br, func(key string) { st.Insert("{{" + key + "}}") })
-	})
-	return btn
-}
-
-// varsMenu lists every variable that would resolve for br at send time,
-// grouped by scope; choosing one inserts its {{name}} through insert.
-// br may be nil for inputs outside a request, as the env editor's.
-func (a *app) varsMenu(m *ui.Menu, br *BruRequest, insert func(key string)) {
-	add := func(src string, d bru.Dict) {
-		if len(d) == 0 {
-			return
-		}
-		m.Item(src).Disabled(true)
-		for _, e := range d {
-			if !e.Enabled || e.Key == "" {
-				continue
-			}
-			e := e
-			label := e.Key
-			if v := e.Value; v != "" {
-				const max = 36
-				if len(v) > max {
-					v = v[:max] + "…"
-				}
-				label += "  ·  " + v
-			}
-			if m.Item(label).Chosen() {
-				insert(e.Key)
-			}
-		}
-	}
-
-	if a.coll != nil && a.coll.Dot != nil {
-		add("集合变量", a.coll.Dot.Vars)
-	}
-	if a.coll != nil && br != nil && br.Folder != "" {
-		parts := strings.Split(br.Folder, "/")
-		for i := range parts {
-			f := a.coll.folderByPath(strings.Join(parts[:i+1], "/"))
-			if f != nil && f.Bru != nil {
-				add("目录变量 "+filepath.Base(f.Path), f.Bru.Vars)
-			}
-		}
-	}
-	if a.coll != nil {
-		for _, e := range a.coll.Environments {
-			if e.Name == a.coll.ActiveEnv {
-				d := append(bru.Dict{}, e.Vars...)
-				for _, p := range a.secretPairs(e) {
-					d = append(d, bru.Entry{Key: p.Key, Value: "••••••", Enabled: p.Enabled})
-				}
-				add("环境变量 "+e.Name, d)
-			}
-		}
-	}
-	if br != nil {
-		add("本请求变量", br.Req.VarsPreRequest)
-	}
-	add("运行时变量", a.runtimeDict())
-
-	m.Separator()
-	if m.Item("查看环境变量…").Chosen() {
-		a.envInspector = true
-	}
-}
 
 // envPicker is the top-right environment selector, as in Bruno.
 func (a *app) envPicker(c *ui.Context) {
@@ -1403,26 +1311,24 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 			if anchor.Clicked() {
 				a.methodOpen = true
 			}
-			urlInput := ui.TextInput(c, &r.URL).Grow(1).MinWidth(0).Placeholder("https://api.example.com/...")
-			urlInput.OnTextKey(func(k ui.TextKey) bool {
-				if k.Key == ui.KeyEnter && (k.Mods == 0 || k.Mods == ui.Cmd) {
-					r.URL = k.Text()
-					extractQueryToParams(r)
-					a.save(br)
-					a.send(br, ts)
-					return true
-				}
-				return false
+			urlChanged := a.varInput(c, br.Path+"-url", br, &r.URL, varInputOpts{
+				Placeholder: "https://api.example.com/...",
+				Label:       "URL",
+				OnKey: func(k ui.TextKey) bool {
+					if k.Key == ui.KeyEnter && (k.Mods == 0 || k.Mods == ui.Cmd) {
+						r.URL = k.Text()
+						extractQueryToParams(r)
+						a.save(br)
+						a.send(br, ts)
+						return true
+					}
+					return false
+				},
 			})
-			if urlInput.Changed() {
+			if urlChanged {
 				extractQueryToParams(r)
 				a.save(br)
 			}
-			a.varButton(c, br, &r.URL, func(s string) {
-				r.URL = s
-				extractQueryToParams(r)
-				a.save(br)
-			})
 			if iconButton(c, iconDeviceFloppy, "保存 (⌘S)").Clicked() {
 				a.syncFromUI(br, ts)
 				a.save(br)
@@ -1482,18 +1388,15 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 			case 5:
 				ui.Row(c).AlignItems(ui.Center).Padding(0, 0, 4, 0).Children(func() {
 					ui.Text(c, "Pre Request").Bold().FontSize(12).Grow(1)
-					a.varEditorButton(c, br, ts.scriptPre)
 				})
 				editor.View(c.Key(br.Path+"-pre"), ts.scriptPre).Height(160).FillWidth()
 				ui.Row(c).AlignItems(ui.Center).Padding(8, 0, 4, 0).Children(func() {
 					ui.Text(c, "Post Response").Bold().FontSize(12).Grow(1)
-					a.varEditorButton(c, br, ts.scriptPost)
 				})
 				editor.View(c.Key(br.Path+"-post"), ts.scriptPost).Height(160).FillWidth()
 			case 6:
 				ui.Row(c).AlignItems(ui.Center).Padding(0, 0, 4, 0).Children(func() {
 					ui.Text(c, "Tests (JavaScript)").Bold().FontSize(12).Grow(1)
-					a.varEditorButton(c, br, ts.testsEd)
 				})
 				editor.View(c.Key(br.Path+"-tests"), ts.testsEd).Height(300).FillWidth()
 			case 7:
@@ -1515,7 +1418,6 @@ func (a *app) docsSection(c *ui.Context, br *BruRequest, ts *tabState) {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "文档说明 (Markdown)").Bold().FontSize(12).Grow(1)
 			if !ts.docsPreview {
-				a.varEditorButton(c, br, ts.docsEd)
 			}
 			btnIcon := iconEye
 			btnLabel := "预览 Markdown"
@@ -1633,14 +1535,7 @@ func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix strin
 				if ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(180).Placeholder("Key").Changed() {
 					onEdit()
 				}
-				vInp := ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value").Label("变量值")
-				a.varButton(c, br, &e.Value, func(s string) {
-					if i < len(*d) && &(*d)[i] == e {
-						e.Value = s
-						onEdit()
-					}
-				})
-				if vInp.Changed() {
+				if a.varInput(c, rowKey+"-v", br, &e.Value, varInputOpts{Placeholder: "Value", Label: "变量值"}) {
 					onEdit()
 				}
 				delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除行")
@@ -1733,12 +1628,10 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 		ui.Column(c).Gap(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "QUERY").Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
-				a.varEditorButton(c, br, ts.bodyEd)
 			})
 			editor.View(c.Key(br.Path+"-gql-q"), ts.bodyEd).Height(180).FillWidth()
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "VARIABLES (JSON)").Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
-				a.varEditorButton(c, br, ts.gqlVarsEd)
 				fmtBtn := ui.Button(c, "").Gap(4).Padding(3, 8)
 				fmtBtn.Children(func() {
 					ui.Icon(c, iconWand).Size(13, 13)
@@ -1756,7 +1649,6 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 	default:
 		ui.Row(c).Padding(2, 0, 6, 0).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, strings.ToUpper(kind)).Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
-			a.varEditorButton(c, br, ts.bodyEd)
 			if kind == "json" {
 				fmtBtn := ui.Button(c, "").Gap(4).Padding(3, 8)
 				fmtBtn.Children(func() {
@@ -1860,15 +1752,7 @@ func (a *app) authFieldRow(c *ui.Context, br *BruRequest, keyPrefix string, d *b
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, k).Width(authLabelWidth).FontSize(12)
 		v := dictValue(*d, k)
-		inp := ui.TextInput(c.Key(fieldKey), &v).Grow(1).Placeholder(k)
-		if secret && !a.revealAuth[fieldKey] {
-			inp.Password()
-		}
-		a.varButton(c, br, &v, func(s string) {
-			dictSet(d, k, s)
-			onSave()
-		})
-		if inp.Changed() {
+		if a.varInput(c, fieldKey, br, &v, varInputOpts{Placeholder: k, Label: k, Password: secret && !a.revealAuth[fieldKey]}) {
 			dictSet(d, k, v)
 			onSave()
 		}
@@ -2491,14 +2375,9 @@ func (a *app) envEditorModal(c *ui.Context) {
 						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 							ui.Checkbox(c.Key(rowKey+"-cb"), &e.Enabled, "")
 							ui.TextInput(c.Key(rowKey+"-k"), &e.Key).Width(150).Placeholder("Key")
-							inp := ui.TextInput(c.Key(rowKey+"-v"), &e.Value).Grow(1).Placeholder("Value")
-							if e.Secret && !a.revealSecret[i] {
-								inp.Password()
-							}
-							a.varButton(c, nil, &e.Value, func(s string) {
-								if i < len(a.envRows) && &a.envRows[i] == e {
-									e.Value = s
-								}
+							a.varInput(c, rowKey+"-v", nil, &e.Value, varInputOpts{
+								Placeholder: "Value",
+								Password:    e.Secret && !a.revealSecret[i],
 							})
 							if e.Secret {
 								eye := iconEye

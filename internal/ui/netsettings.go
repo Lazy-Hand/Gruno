@@ -136,12 +136,7 @@ func (a *app) collectionProxyTab(c *ui.Context) {
 	field := func(label, key string, v *string, secret bool) {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, label).Width(authLabelWidth).FontSize(12)
-			inp := ui.TextInput(c.Key("coll-proxy-"+key), v).Grow(1).Placeholder(label)
-			if secret {
-				inp.Password()
-			}
-			a.varButton(c, nil, v, func(s string) { *v = s; save() })
-			if inp.Changed() {
+			if a.varInput(c, "coll-proxy-"+key, nil, v, varInputOpts{Placeholder: label, Label: label, Password: secret}) {
 				save()
 			}
 		})

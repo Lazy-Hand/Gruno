@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+- Variables live inside the fields: a {{name}} shows as a chip —
+  accent when it resolves, red when it does not — whose tooltip has the
+  value and whose menu swaps it for another variable. Typing "{{" in a
+  field lists the variables, filtered as you type; ↑/↓ and Enter or
+  Tab insert one. Request bodies complete variables the same way. The
+  {} buttons beside the fields are gone
+- Cleaner request and response panes: the response status, time and
+  size no longer wrap and copy/clear stay in view; section tabs scroll
+  in a narrow pane; the Tests tab shows passed/total in green or red
+- The timeline shows the request as sent, variables resolved and auth
+  attached
+- The sidebar shortens DELETE and OPTIONS to DEL and OPT
 ## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +70,7 @@ func TestSectionSwitching(t *testing.T) {
 	}
 }
 
-func TestVarsMenuInsertsVariable(t *testing.T) {
+func TestVariablesCompleteAndShowAsChips(t *testing.T) {
 	a := openedApp(t)
 	env, err := a.coll.AddEnvironment("Local")
 	if err != nil {
@@ -87,37 +86,57 @@ func TestVarsMenuInsertsVariable(t *testing.T) {
 	br.Req.VarsPreRequest = bru.Dict{{Key: "rid", Value: "1", Enabled: true}}
 	a.openTab(br)
 
-	tt := ui.NewTester(a.view, 1200, 800)
-	if err := tt.Click("插入变量"); err != nil {
-		t.Fatalf("vars button: %v", err)
+	// Every scope a send resolves against is offered.
+	names := map[string]string{}
+	for _, v := range a.varEntries(br) {
+		names[v.Name] = v.Scope
 	}
-	got := tt.Menu()
-	if !slices.Contains(got, "环境变量 Local") ||
-		!slices.Contains(got, "本请求变量") ||
-		!slices.Contains(got, "baseURL  ·  http://x") {
-		t.Fatalf("menu items missing: %q", got)
-	}
-	if err := tt.ChooseMenuItem("rid  ·  1"); err != nil {
-		t.Fatal(err)
-	}
-	if want := "https://api{{rid}}"; br.Req.URL != want {
-		t.Fatalf("url %q, want %q", br.Req.URL, want)
+	if names["baseURL"] != "环境" || names["rid"] != "请求" {
+		t.Fatalf("entries %v", names)
 	}
 
-	// The {} button beside a Params value cell writes into that cell,
-	// completing a typed {{ prefix.
-	br.Req.ParamsQuery = bru.Dict{{Key: "q", Value: "x{{ba", Enabled: true}}
-	tt.Frame()
-	rect, ok := tt.Find("变量值")
-	if !ok {
-		t.Fatal("value input not found")
-	}
-	// The braces button sits just right of the value input.
-	tt.ClickAt(rect.X+rect.W+14, rect.Y+rect.H/2)
-	if err := tt.ChooseMenuItem("baseURL  ·  http://x"); err != nil {
+	tt := ui.NewTester(a.view, 1200, 800)
+	if err := tt.Click("URL"); err != nil {
 		t.Fatal(err)
 	}
-	if want := "x{{baseURL}}"; br.Req.ParamsQuery[0].Value != want {
+	tt.Frame()
+	tt.Key(ui.Cmd, ui.KeyRight)
+	tt.Type("/{{ba")
+	tt.Frame()
+	if !tt.HasText("baseURL") {
+		t.Fatalf("no suggestion: %q", tt.Texts())
+	}
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	if want := "https://api/{{baseURL}}"; br.Req.URL != want {
+		t.Fatalf("url %q, want %q", br.Req.URL, want)
+	}
+	if a.tabState(br).sending {
+		t.Fatal("Enter completed the variable and also sent")
+	}
+
+	// Elsewhere, the URL shows the variable as a chip.
+	if err := tt.Click("Params"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText(br.Req.URL) || !tt.HasText("baseURL") || !tt.HasText("https://api/") {
+		t.Fatalf("no chip: %q", tt.Texts())
+	}
+
+	// A Params value cell completes the same way.
+	br.Req.ParamsQuery = bru.Dict{{Key: "q", Value: "x", Enabled: true}}
+	tt.Frame()
+	if err := tt.Click("变量值"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Key(ui.Cmd, ui.KeyRight)
+	tt.Type("{{ri")
+	tt.Frame()
+	tt.Key(0, ui.KeyTab)
+	tt.Frame()
+	if want := "x{{rid}}"; br.Req.ParamsQuery[0].Value != want {
 		t.Fatalf("param value %q, want %q", br.Req.ParamsQuery[0].Value, want)
 	}
 }
