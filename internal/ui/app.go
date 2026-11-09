@@ -113,6 +113,10 @@ type app struct {
 	cookiesOpen    bool
 	codegen        codegenState
 
+	// runner is the collection runner view, nil when closed.
+	runner      *runnerState
+	runnerSplit float32
+
 	// varFields is the state of each varInput, by field key.
 	varFields map[string]*varFieldState
 	mdOpts     markdown.Options
@@ -174,6 +178,7 @@ func newApp() *app {
 		revealAuth:       map[string]bool{},
 		split:            240,
 		vsplit:           50,
+		runnerSplit:      45,
 		layoutHorizontal: true,
 		themeMode:        "system",
 		newRequestMethod: "GET",
@@ -200,6 +205,7 @@ func (a *app) openCollection(dir string) {
 		return
 	}
 	a.openErr = ""
+	a.closeRunner()
 	a.coll = c
 	a.open = nil
 	a.active = ""
@@ -639,6 +645,7 @@ func (a *app) view(c *ui.Context) {
 	for _, ts := range a.tabs {
 		a.applyScriptVars(ts)
 	}
+	a.applyRunVars()
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		if br, ts := a.activeTab(); br != nil {
 			a.syncFromUI(br, ts)
@@ -660,7 +667,9 @@ func (a *app) view(c *ui.Context) {
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyW) {
-		if a.active != "" {
+		if a.active == runnerTab {
+			a.closeRunner()
+		} else if a.active != "" {
 			a.closeTab(a.active)
 		}
 	}
@@ -830,6 +839,9 @@ func (a *app) collectionMenu(m *ui.Menu) {
 		a.newFolder = true
 		a.newFolderIn = ""
 	}
+	if m.Item("运行集合").Chosen() {
+		a.openRunner("")
+	}
 	m.Separator()
 	if m.Item("集合设置…").Chosen() {
 		a.initCollectionSettingsEditors()
@@ -876,6 +888,7 @@ func (a *app) collectionMenu(m *ui.Menu) {
 	}
 	m.Separator()
 	if m.Item("关闭当前集合").Chosen() {
+		a.closeRunner()
 		a.coll = nil
 		a.open = nil
 		a.active = ""
@@ -1124,6 +1137,9 @@ func (a *app) folderMenu(m *ui.Menu, f *Folder) {
 		a.newFolder = true
 		a.newFolderIn = ""
 	}
+	if m.Item("运行目录").Chosen() {
+		a.openRunner(f.Path)
+	}
 	if m.Item("重命名目录…").Chosen() {
 		a.renameFolder = f
 		a.renameFolderIn = f.Name
@@ -1140,6 +1156,10 @@ func (a *app) folderMenu(m *ui.Menu, f *Folder) {
 func (a *app) workbench(c *ui.Context) {
 	ui.Column(c).Fill().MinWidth(0).Children(func() {
 		a.tabBar(c)
+		if a.active == runnerTab && a.runner != nil {
+			a.runnerView(c)
+			return
+		}
 		br, ts := a.activeTab()
 		if br == nil {
 			t := c.Theme()
@@ -1223,6 +1243,9 @@ func (a *app) tabBar(c *ui.Context) {
 							a.active = ""
 						}
 					})
+				}
+				if a.runner != nil {
+					a.runnerTabItem(c)
 				}
 				newTabBtn := ui.Button(c, "").Padding(5, 7).Label("新建请求")
 				newTabBtn.Children(func() {

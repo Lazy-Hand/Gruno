@@ -38,6 +38,10 @@ func tablerSVG(inner string) *ui.SVG {
 
 var (
 	// Folder & Collection icons (@tabler/icons)
+	// Runner (@tabler/icons player-play, player-stop)
+	iconPlay = tablerSVG(`<path d="M7 4v16l13 -8z" />`)
+	iconStop = tablerSVG(`<path d="M5 5m0 2a2 2 0 0 1 2 -2h10a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2z" />`)
+
 	iconFolder = tablerSVG(`<path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2" />`)
 
 	iconFolderOpen = tablerSVG(`<path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2" />`)

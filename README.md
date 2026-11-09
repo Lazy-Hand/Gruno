@@ -18,6 +18,8 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 - Scripts run on [goja](https://github.com/dop251/goja): pre-request scripts (collection → folders → request) may change the request before variables resolve; after the response come `vars:post-response`, post-response scripts, the `assert` block and `tests` (request → folders → collection). The response pane's **Tests** tab shows results, script errors and console output. A pre-request script that throws stops the send.
 - Script API: `req` (get/set URL, method, headers, body), `res` (`status`, `headers`, parsed `body`, `res('a.b[0]')`, getters), `bru` (`get/setVar`, `get/setEnvVar` with `{persist: true}`, collection/folder/request var getters, `interpolate`, `getProcessEnv`, `sleep`), `test()` (sync or async), chai-style `expect`, `console.*`. Each phase is capped at 10 s.
 
+- Collection runner ("运行集合" in the collection menu, "运行目录" on a folder): sends every request in sidebar order with an optional delay, runtime and environment variables carried from one request to the next, and lists each request's status, time and tests (filter by passed / failed / skipped; select one for its tests, response and headers). Scripts steer it with `bru.setNextRequest(name)` / `bru.runner.setNextRequest(name)` (jump to a request by name; `null` ends the run), `bru.runner.skipRequest()` and `bru.runner.stopExecution()`.
+
 ## Layout
 
 ```
@@ -59,6 +61,6 @@ go test ./...
 
 ## Not yet (scope of this iteration)
 
-- In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`, and runner-only calls such as `bru.setNextRequest` (logged and ignored).
+- In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`.
 - OAuth2 `authorization_code` (browser callback); AWSv4/WSSE/NTLM signing.
-- Collection runner, Postman/Insomnia/OpenAPI import.
+- Postman/Insomnia/OpenAPI import; binary file bodies.

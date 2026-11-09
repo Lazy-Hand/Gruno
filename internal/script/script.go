@@ -174,11 +174,25 @@ type Response struct {
 	DurationMs float64
 }
 
+// RunControl is a collection run's flow, as the runner-only bru calls
+// set it: the next request by name (NextSet; NextNull for null, which
+// ends the run), skipping the current request, stopping the run.
+type RunControl struct {
+	NextSet  bool
+	Next     string
+	NextNull bool
+	Skip     bool
+	Stop     bool
+}
+
 // Session runs the scripts of one send against Vars.
 type Session struct {
 	Vars    *Vars
 	Result  Result
 	Timeout time.Duration
+	// Run is set when the session belongs to a collection run; without
+	// it the runner-only calls warn and do nothing.
+	Run *RunControl
 
 	phase string // current phase, for console log entries
 }
@@ -442,6 +456,28 @@ func (s *Session) host(vm *goja.Runtime) map[string]any {
 				return str
 			}
 			return out
+		},
+		"inRunner": func() bool { return s.Run != nil },
+		"runnerNext": func(name goja.Value) {
+			if s.Run == nil {
+				return
+			}
+			s.Run.NextSet = true
+			if name == nil || goja.IsNull(name) || goja.IsUndefined(name) {
+				s.Run.NextNull, s.Run.Next = true, ""
+				return
+			}
+			s.Run.NextNull, s.Run.Next = false, name.String()
+		},
+		"runnerSkip": func() {
+			if s.Run != nil {
+				s.Run.Skip = true
+			}
+		},
+		"runnerStop": func() {
+			if s.Run != nil {
+				s.Run.Stop = true
+			}
 		},
 		"sleep": func(ms float64) {
 			if ms > 0 {

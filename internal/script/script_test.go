@@ -141,3 +141,29 @@ func TestNoScriptsIsNoop(t *testing.T) {
 		t.Fatal("expected nothing to run")
 	}
 }
+
+func TestRunnerControl(t *testing.T) {
+	// Outside a run the calls only warn.
+	s := NewSession(&Vars{})
+	req := newReq()
+	if err := s.PreRequest(&req, []Script{{Label: "请求", Source: `bru.runner.skipRequest(); bru.setNextRequest("x")`}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Result.Logs) != 2 || s.Result.Logs[0].Level != "warn" {
+		t.Fatalf("logs %+v", s.Result.Logs)
+	}
+
+	s = NewSession(&Vars{})
+	s.Run = &RunControl{}
+	if err := s.PreRequest(&req, []Script{{Label: "请求", Source: `bru.runner.skipRequest(); bru.runner.setNextRequest("Login")`}}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Run.Skip || !s.Run.NextSet || s.Run.Next != "Login" || s.Run.NextNull || len(s.Result.Logs) != 0 {
+		t.Fatalf("run %+v logs %+v", s.Run, s.Result.Logs)
+	}
+	s.Run = &RunControl{}
+	s.PostResponse(req, Response{Status: 200}, []Script{{Label: "请求", Source: `bru.setNextRequest(null); bru.runner.stopExecution()`}}, nil, nil, nil)
+	if !s.Run.NextSet || !s.Run.NextNull || !s.Run.Stop || len(s.Result.Errors) != 0 {
+		t.Fatalf("run %+v errs %+v", s.Run, s.Result.Errors)
+	}
+}

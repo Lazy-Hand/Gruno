@@ -474,11 +474,23 @@ var bru = (function (h) {
       return h.interpolate(s);
     },
     sleep: function (ms) { h.sleep(Number(ms) || 0); return Promise.resolve(); },
-    setNextRequest: function () { console.warn('bru.setNextRequest 只在集合运行器中生效，已忽略'); },
+    setNextRequest: function (name) {
+      if (!h.inRunner()) { console.warn('bru.setNextRequest 只在集合运行器中生效，已忽略'); return; }
+      h.runnerNext(name === undefined ? null : name);
+    },
     runner: {
-      setNextRequest: function () { console.warn('bru.runner.setNextRequest 只在集合运行器中生效，已忽略'); },
-      skipRequest: function () { console.warn('bru.runner.skipRequest 只在集合运行器中生效，已忽略'); },
-      stopExecution: function () { console.warn('bru.runner.stopExecution 只在集合运行器中生效，已忽略'); }
+      setNextRequest: function (name) {
+        if (!h.inRunner()) { console.warn('bru.runner.setNextRequest 只在集合运行器中生效，已忽略'); return; }
+        h.runnerNext(name === undefined ? null : name);
+      },
+      skipRequest: function () {
+        if (!h.inRunner()) { console.warn('bru.runner.skipRequest 只在集合运行器中生效，已忽略'); return; }
+        h.runnerSkip();
+      },
+      stopExecution: function () {
+        if (!h.inRunner()) { console.warn('bru.runner.stopExecution 只在集合运行器中生效，已忽略'); return; }
+        h.runnerStop();
+      }
     },
     runRequest: function () { return Promise.reject(new Error('bru.runRequest 暂不支持')); },
     sendRequest: function () { return Promise.reject(new Error('bru.sendRequest 暂不支持')); }

@@ -23,6 +23,12 @@
   this off
 - Generate Code from a request's menu: cURL, JavaScript fetch, Python
   requests, Go net/http and HTTPie, variables resolved and auth attached
+- Collection runner: "运行集合" in the collection menu or "运行目录" on a
+  folder opens a runner tab that sends the requests in order, with an
+  optional delay, carrying runtime and environment variables along; each
+  request shows its status, time and tests, and a failed one its details.
+  bru.setNextRequest, bru.runner.setNextRequest, skipRequest and
+  stopExecution now steer the run instead of being ignored
 ## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,
