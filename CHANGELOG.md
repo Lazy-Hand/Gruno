@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.1] - 2026-11-09
 
 - Variables live inside the fields: a {{name}} shows as a chip —
   accent when it resolves, red when it does not — whose tooltip has the
