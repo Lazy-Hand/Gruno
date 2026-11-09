@@ -4,6 +4,7 @@ package ui
 // tree selection, tab behavior and the request editor's sections.
 
 import (
+	"os"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -138,6 +139,23 @@ func TestVariablesCompleteAndShowAsChips(t *testing.T) {
 	tt.Frame()
 	if want := "x{{rid}}"; br.Req.ParamsQuery[0].Value != want {
 		t.Fatalf("param value %q, want %q", br.Req.ParamsQuery[0].Value, want)
+	}
+	// The completion reaches the URL and the file, as typing does.
+	if want := "https://api/{{baseURL}}?q=x{{rid}}"; br.Req.URL != want {
+		t.Fatalf("url not synced from params: %q, want %q", br.Req.URL, want)
+	}
+	data, err := os.ReadFile(filepath.Join(a.coll.Root, br.Path))
+	if err != nil || !strings.Contains(string(data), "q: x{{rid}}") || !strings.Contains(string(data), "url: https://api/{{baseURL}}?q=x{{rid}}") {
+		t.Fatalf("not saved: %v\n%s", err, data)
+	}
+	// The field kept the focus to type on.
+	if !tt.Focused("变量值") {
+		t.Fatal("completion lost the focus")
+	}
+	tt.Type("-1")
+	tt.Frame()
+	if want := "x{{rid}}-1"; br.Req.ParamsQuery[0].Value != want {
+		t.Fatalf("typing after completion: %q", br.Req.ParamsQuery[0].Value)
 	}
 }
 

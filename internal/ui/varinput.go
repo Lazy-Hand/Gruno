@@ -195,6 +195,10 @@ type varFieldState struct {
 	// frame: a press there takes the focus from the input, which must
 	// not close the list before the click lands.
 	overList bool
+	// pending is text a key handler chose, applied in the next build:
+	// key handlers run after the build that returned changed, so the
+	// change must surface in a build for the caller to sync and save.
+	pending *string
 }
 
 func (a *app) varField(key string) *varFieldState {
@@ -225,8 +229,12 @@ func (a *app) varInput(c *ui.Context, key string, br *BruRequest, v *string, o v
 	t := c.Theme()
 	st := a.varField(key)
 	vars := a.varEntries(br)
-	tokens := varTokens(*v)
 	changed := false
+	if st.pending != nil {
+		*v, st.pending = *st.pending, nil
+		changed = true
+	}
+	tokens := varTokens(*v)
 
 	sizeOf := func(e ui.Element) ui.Element {
 		if o.Width > 0 {
@@ -304,10 +312,9 @@ func (a *app) varInput(c *ui.Context, key string, br *BruRequest, v *string, o v
 				return true
 			case ui.KeyEnter, ui.KeyTab:
 				text, pos := completeVar(k.Text(), st.start, st.last, matches[st.selected].Name)
-				k.SetText(text)
-				*v = text
+				st.pending = &text
 				st.caret, st.suggest = pos, false
-				changed = true
+				st.editing, st.focused = true, false // stay in the input, focused
 				return true
 			case ui.KeyEscape:
 				st.suggest = false
