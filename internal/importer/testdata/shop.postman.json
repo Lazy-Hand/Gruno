@@ -1,0 +1,48 @@
+{
+  "info": {"name": "Shop API", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+  "variable": [{"key": "baseUrl", "value": "https://api.test"}, {"key": "retries", "value": 3}],
+  "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{token}}"}]},
+  "item": [
+    {
+      "name": "Users",
+      "auth": {"type": "basic", "basic": [{"key": "username", "value": "ada"}, {"key": "password", "value": "pw"}]},
+      "item": [
+        {
+          "name": "Create user",
+          "event": [{"listen": "test", "script": {"exec": ["pm.test('ok', function(){});"]}}],
+          "request": {
+            "method": "POST",
+            "url": {"raw": "{{baseUrl}}/users?expand=roles&debug=1", "query": [
+              {"key": "expand", "value": "roles"}, {"key": "debug", "value": "1", "disabled": true}]},
+            "header": [{"key": "X-Trace", "value": "t"}, {"key": "Accept", "value": "json", "disabled": true}],
+            "body": {"mode": "raw", "raw": "{\"name\":\"Ada\"}", "options": {"raw": {"language": "json"}}},
+            "auth": {"type": "noauth"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/files",
+        "body": {"mode": "formdata", "formdata": [
+          {"key": "title", "value": "doc", "type": "text"},
+          {"key": "file", "type": "file", "src": "a.png"}]},
+        "auth": {"type": "apikey", "apikey": [{"key": "key", "value": "X-Key"}, {"key": "value", "value": "{{apiKey}}"}, {"key": "in", "value": "query"}]}
+      }
+    },
+    {
+      "name": "Ping",
+      "request": {"method": "GET", "url": "{{baseUrl}}/ping?x=1&y=2",
+        "auth": {"type": "oauth2", "oauth2": [
+          {"key": "grantType", "value": "client_credentials"}, {"key": "accessTokenUrl", "value": "https://auth/token"},
+          {"key": "clientId", "value": "id"}, {"key": "clientSecret", "value": "sec"}, {"key": "addTokenTo", "value": "header"}]}}
+    },
+    {
+      "name": "Legacy",
+      "request": {"method": "GET", "url": "https://x/legacy", "auth": {"type": "awsv4"},
+        "body": {"mode": "graphql", "graphql": {"query": "{ me { id } }", "variables": "{\"a\":1}"}}}
+    }
+  ]
+}

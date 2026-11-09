@@ -29,6 +29,10 @@
   request shows its status, time and tests, and a failed one its details.
   bru.setNextRequest, bru.runner.setNextRequest, skipRequest and
   stopExecution now steer the run instead of being ignored
+- Import a Postman collection (v2.0/v2.1 JSON) as a new collection, from
+  the welcome screen or the collection menu. Folders, requests, bodies,
+  auth and collection variables carry over; scripts, file uploads and
+  unsupported auth are skipped and listed when the import finishes
 ## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,

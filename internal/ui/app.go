@@ -802,6 +802,8 @@ func (a *app) welcome(c *ui.Context) {
 					}
 				}
 			})
+
+			card(iconBox, "导入 Postman 集合…", "从 Postman 导出的 JSON 文件新建集合", a.importPostman)
 		})
 
 		if len(a.recentDirs) > 0 {
@@ -852,6 +854,9 @@ func (a *app) collectionMenu(m *ui.Menu) {
 	}
 	if m.Item("偏好设置…").Chosen() {
 		a.openPrefs()
+	}
+	if m.Item("导入 Postman 集合…").Chosen() {
+		a.importPostman()
 	}
 	if m.Item("重命名集合…").Chosen() {
 		a.renameCollIn = a.coll.Name
