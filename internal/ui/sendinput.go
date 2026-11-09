@@ -102,6 +102,8 @@ func bruBodySpec(sel string, r *bru.Request) send.BodySpec {
 		return send.BodySpec{Mode: send.BodyText, Text: r.BodyXML}
 	case "form-urlencoded":
 		return send.BodySpec{Mode: send.BodyURLEncoded, Form: dictPairs(r.BodyFormURLEnc)}
+	case "multipart-form":
+		return send.BodySpec{Mode: send.BodyMultipart, Form: dictPairs(r.BodyMultipart)}
 	case "graphql":
 		// Bruno sends {query, variables} as JSON.
 		q, _ := json.Marshal(r.BodyGraphQL)
@@ -148,6 +150,8 @@ func (c *Collection) sendInputOf(r *BruRequest) send.SendInput {
 		url, _, _ = strings.Cut(url, "?")
 	}
 
+	body := bruBodySpec(r.Req.Body, r.Req)
+	body.FileBase = c.Root
 	return send.SendInput{
 		Request: send.RequestData{
 			Name:       r.Req.Meta.Name,
@@ -156,7 +160,7 @@ func (c *Collection) sendInputOf(r *BruRequest) send.SendInput {
 			Query:      dictPairs(r.Req.ParamsQuery),
 			PathParams: dictPairs(r.Req.ParamsPath),
 			Headers:    headers,
-			Body:       bruBodySpec(r.Req.Body, r.Req),
+			Body:       body,
 			Auth:       bruAuthSpec(orDefaultS(r.Req.Auth, "none"), r, c),
 		},
 		Scopes: scopes,

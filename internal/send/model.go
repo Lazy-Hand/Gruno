@@ -20,6 +20,7 @@ const (
 	BodyJSON       BodyMode = "json"
 	BodyText       BodyMode = "text"
 	BodyURLEncoded BodyMode = "urlencoded"
+	BodyMultipart  BodyMode = "multipart"
 )
 
 // BodySpec is the request body editor state. Switching modes keeps the
@@ -28,6 +29,9 @@ type BodySpec struct {
 	Mode BodyMode `json:"mode"`
 	Text string   `json:"text"`
 	Form []Pair   `json:"form"`
+	// FileBase resolves relative @file(...) paths of a multipart form:
+	// the collection directory.
+	FileBase string `json:"fileBase,omitempty"`
 }
 
 // AuthMode selects the authentication helper.

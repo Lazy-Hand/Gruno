@@ -26,11 +26,14 @@ import (
 type HTTPService struct {
 	transports transportCache
 	tokens     tokenCache
+	// Cookies keeps Set-Cookie responses and sends them back, unless a
+	// send's Settings.NoCookies opts out.
+	Cookies *CookieJar
 }
 
 // NewHTTPService builds the service with in-memory dependencies only.
 func NewHTTPService() *HTTPService {
-	return &HTTPService{}
+	return &HTTPService{Cookies: NewCookieJar()}
 }
 
 // Send executes the request: onHead receives the head once, errors are

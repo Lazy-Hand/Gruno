@@ -14,6 +14,15 @@
 - The timeline shows the request as sent, variables resolved and auth
   attached
 - The sidebar shortens DELETE and OPTIONS to DEL and OPT
+- Multipart form bodies are sent (they were silently dropped before),
+  with file uploads: "添加文件…" adds a @file(...) field, paths inside
+  the collection kept relative
+- Cookies: responses' Set-Cookie are kept for the session and sent with
+  later requests to the same site; "Cookie…" in the collection menu and
+  Preferences lists, deletes and clears them, and Preferences can turn
+  this off
+- Generate Code from a request's menu: cURL, JavaScript fetch, Python
+  requests, Go net/http and HTTPie, variables resolved and auth attached
 ## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,

@@ -5,6 +5,7 @@ package send
 // prepareRequest never touches the network.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -267,6 +268,17 @@ func prepareRequest(ctx context.Context, input SendInput) (*http.Request, error)
 		}
 		bodyReader = strings.NewReader(encoded)
 		contentType = "application/x-www-form-urlencoded"
+	case BodyMultipart:
+		form, err := resolver.resolvePairs(req.Body.Form)
+		if err != nil {
+			return nil, err
+		}
+		data, ct, err := encodeMultipart(form, req.Body.FileBase)
+		if err != nil {
+			return nil, err
+		}
+		bodyReader = bytes.NewReader(data)
+		contentType = ct
 	default:
 		return nil, fmt.Errorf("未知请求体模式 %q", req.Body.Mode)
 	}
@@ -299,6 +311,11 @@ func prepareRequest(ctx context.Context, input SendInput) (*http.Request, error)
 			return nil, fmt.Errorf("请求头 %q 含非法字符", key)
 		}
 		if strings.EqualFold(key, "content-type") {
+			if req.Body.Mode == BodyMultipart {
+				// The boundary is ours; a hand-written multipart
+				// Content-Type would lack it.
+				continue
+			}
 			explicitCT = true
 		}
 		httpReq.Header.Add(key, h.Value)

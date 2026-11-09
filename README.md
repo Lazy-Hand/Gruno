@@ -12,7 +12,9 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 - `bruno.json` is edited in place — keys Gruno does not use, and their order, are kept; `.bru` blocks it does not model are written back verbatim.
 - Collection/folder headers apply to every request unless a request header of the same name overrides them.
 - Auth: none / inherit / basic / bearer / apikey / digest (two-round RFC 7616 MD5) / OAuth2 (`client_credentials` and `password` grants; credentials in the body or a Basic header; token in the `Authorization` header with a prefix or in the URL; tokens cached for the session, refreshed with `refresh_token` when they expire, "清除缓存的 token" forgets them). AWSv4/WSSE/NTLM and the OAuth2 `authorization_code` grant parse and keep their block data but are not yet executed.
-- Bodies: none, json, text, xml, form-urlencoded, multipart-form, graphql (sent as `{query, variables}` JSON).
+- Bodies: none, json, text, xml, form-urlencoded, multipart-form (fields whose value is `@file(a.png|b.pdf)` upload those files, paths relative to the collection; `@contentType(type)` sets a part's type), graphql (sent as `{query, variables}` JSON).
+- Cookies: `Set-Cookie` responses are kept for the session and sent back to matching requests (public-suffix rules); "Cookie…" lists, deletes and clears them, and a preference turns the jar off.
+- Generate Code (request menu): cURL, JavaScript fetch, Python requests, Go net/http and HTTPie, from the request as it would be sent.
 - Scripts run on [goja](https://github.com/dop251/goja): pre-request scripts (collection → folders → request) may change the request before variables resolve; after the response come `vars:post-response`, post-response scripts, the `assert` block and `tests` (request → folders → collection). The response pane's **Tests** tab shows results, script errors and console output. A pre-request script that throws stops the send.
 - Script API: `req` (get/set URL, method, headers, body), `res` (`status`, `headers`, parsed `body`, `res('a.b[0]')`, getters), `bru` (`get/setVar`, `get/setEnvVar` with `{persist: true}`, collection/folder/request var getters, `interpolate`, `getProcessEnv`, `sleep`), `test()` (sync or async), chai-style `expect`, `console.*`. Each phase is capped at 10 s.
 
@@ -59,4 +61,4 @@ go test ./...
 
 - In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`, and runner-only calls such as `bru.setNextRequest` (logged and ignored).
 - OAuth2 `authorization_code` (browser callback); AWSv4/WSSE/NTLM signing.
-- Collection runner, codegen, Postman/Insomnia import.
+- Collection runner, Postman/Insomnia/OpenAPI import.

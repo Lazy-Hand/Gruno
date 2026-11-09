@@ -67,6 +67,8 @@ type Settings struct {
 	CACertFile   string        `json:"caCertFile"` // PEM, added to the system pool
 	Proxy        ProxySettings `json:"proxy"`
 	ClientCerts  []ClientCert  `json:"clientCerts"`
+	// NoCookies neither sends the jar's cookies nor keeps new ones.
+	NoCookies bool `json:"noCookies"`
 }
 
 // transportKey identifies a transport configuration; equal keys share
@@ -138,6 +140,9 @@ func (s *HTTPService) clientFor(st Settings, target *url.URL, r *varResolver) (*
 	}
 
 	c := &http.Client{Transport: tr, Timeout: st.Timeout}
+	if !st.NoCookies && s.Cookies != nil {
+		c.Jar = s.Cookies
+	}
 	switch {
 	case st.NoRedirects:
 		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

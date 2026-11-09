@@ -110,6 +110,8 @@ type app struct {
 	prefsDraft     netPrefs
 	prefsTimeoutIn string
 	certPFX        map[int]bool
+	cookiesOpen    bool
+	codegen        codegenState
 
 	// varFields is the state of each varInput, by field key.
 	varFields map[string]*varFieldState
@@ -833,6 +835,9 @@ func (a *app) collectionMenu(m *ui.Menu) {
 		a.initCollectionSettingsEditors()
 		a.collSettingsOpen = true
 	}
+	if m.Item("Cookie…").Chosen() {
+		a.cookiesOpen = true
+	}
 	if m.Item("偏好设置…").Chosen() {
 		a.openPrefs()
 	}
@@ -891,6 +896,9 @@ func (a *app) envMenu(m *ui.Menu) {
 	if m.Item("集合设置…").Chosen() {
 		a.initCollectionSettingsEditors()
 		a.collSettingsOpen = true
+	}
+	if m.Item("Cookie…").Chosen() {
+		a.cookiesOpen = true
 	}
 	if m.Item("偏好设置…").Chosen() {
 		a.openPrefs()
@@ -1073,6 +1081,9 @@ func (a *app) folderHasMatch(path string) bool {
 func (a *app) requestMenu(m *ui.Menu, r *BruRequest) {
 	if m.Item("打开").Chosen() {
 		a.openTab(r)
+	}
+	if m.Item("生成代码…").Chosen() {
+		a.openCodegen(r)
 	}
 	m.Separator()
 	if m.Item("重命名…").Chosen() {
@@ -1624,6 +1635,25 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 			d = &r.BodyMultipart
 		}
 		a.dictTable(c, d, kind, br, ts)
+		if kind == "multipart-form" {
+			ui.Row(c).Gap(8).Padding(6, 0, 0, 0).AlignItems(ui.Center).Children(func() {
+				addFile := ui.Button(c, "").Gap(4)
+				addFile.Children(func() {
+					ui.Icon(c, iconPlus).Size(13, 13)
+					ui.Text(c, "添加文件…").FontSize(12)
+				})
+				if addFile.Clicked() {
+					if paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: "选择要上传的文件", Multiple: true}); err == nil && len(paths) > 0 {
+						r.BodyMultipart = append(r.BodyMultipart, bru.Entry{
+							Key: "file", Value: fileValue(a.coll.Root, paths), Enabled: true,
+						})
+						a.save(br)
+					}
+				}
+				ui.Text(c, "文件字段的值写作 @file(路径)，多个文件用 | 分隔；集合目录内的文件存为相对路径").
+					FontSize(11).TextColor(t.TextMuted)
+			})
+		}
 	case "graphql":
 		ui.Column(c).Gap(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
@@ -1979,6 +2009,8 @@ func (a *app) modals(c *ui.Context) {
 	a.deleteFolderModal(c)
 	a.envEditorModal(c)
 	a.prefsModal(c)
+	a.cookiesModal(c)
+	a.codegenModal(c)
 	a.newEnvModal(c)
 	a.envInspectorModal(c)
 	a.collectionSettingsModal(c)
@@ -2599,4 +2631,17 @@ func testsTab(t *ui.Theme, r *script.Result) tabItem {
 		it.Badge, it.BadgeColor = "!", t.Danger
 	}
 	return it
+}
+
+// fileValue renders chosen files as a multipart @file(...) value, paths
+// inside the collection relative to it so the .bru file travels.
+func fileValue(root string, paths []string) string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if rel, err := filepath.Rel(root, p); err == nil && !strings.HasPrefix(rel, "..") {
+			p = filepath.ToSlash(rel)
+		}
+		out = append(out, p)
+	}
+	return "@file(" + strings.Join(out, "|") + ")"
 }
