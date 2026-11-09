@@ -740,7 +740,7 @@ func (a *app) welcome(c *ui.Context) {
 		ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Image(c, brunoLogoSVG).Size(52, 52)
-				ui.Text(c, "Bruno").FontSize(34).Bold()
+				ui.Text(c, "Gruno").FontSize(34).Bold()
 			})
 			ui.Text(c, "轻量、开源、Git 友好的 API 客户端").TextColor(t.TextMuted).FontSize(14)
 			if a.openErr != "" {
@@ -1135,10 +1135,10 @@ func (a *app) treeLevel(c *ui.Context, parent string, depth int) {
 			m := strings.ToUpper(r.Req.Method)
 			row := ui.Row(c).Gap(6).Padding(3, 8).PaddingStart(6 + float32(depth)*14).
 				AlignItems(ui.Center).Radius(4).Children(func() {
-				ui.Box(c).Background(methodBgColor(t, m)).Radius(3).Padding(1, 4).Width(38).Children(func() {
-					ui.Text(c, m).FontSize(10).Bold().TextColor(methodColor(t, m))
+				ui.Box(c).Background(methodBgColor(t, m)).Radius(3).Padding(1, 0).Width(40).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, shortMethod(m)).FontSize(10).Bold().TextColor(methodColor(t, m)).NoWrap()
 				})
-				ui.Text(c, label).FontSize(12.5).Grow(1)
+				ui.Text(c, label).FontSize(12.5).Grow(1).MinWidth(0).MaxLines(1)
 			})
 			if a.active == r.Path {
 				row.Background(t.Accent.Alpha(0.14))
@@ -1403,7 +1403,7 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 			if anchor.Clicked() {
 				a.methodOpen = true
 			}
-			urlInput := ui.TextInput(c, &r.URL).Grow(1).Placeholder("https://api.example.com/...")
+			urlInput := ui.TextInput(c, &r.URL).Grow(1).MinWidth(0).Placeholder("https://api.example.com/...")
 			urlInput.OnTextKey(func(k ui.TextKey) bool {
 				if k.Key == ui.KeyEnter && (k.Mods == 0 || k.Mods == ui.Cmd) {
 					r.URL = k.Text()
@@ -1423,12 +1423,7 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 				extractQueryToParams(r)
 				a.save(br)
 			})
-			saveBtn := ui.Button(c, "").Gap(5)
-			saveBtn.Children(func() {
-				ui.Icon(c, iconDeviceFloppy).Size(14, 14)
-				ui.Text(c, "保存")
-			})
-			if saveBtn.Clicked() {
+			if iconButton(c, iconDeviceFloppy, "保存 (⌘S)").Clicked() {
 				a.syncFromUI(br, ts)
 				a.save(br)
 			}
@@ -1442,7 +1437,7 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 					ts.cancel()
 				}
 			} else {
-				sendBtn := ui.PrimaryButton(c, "").Gap(5)
+				sendBtn := ui.PrimaryButton(c, "").Gap(5).Tooltip("发送 (⌘Enter)")
 				sendBtn.Children(func() {
 					ui.Icon(c, iconSend).Size(14, 14)
 					ui.Text(c, "发送")
@@ -1453,62 +1448,21 @@ func (a *app) requestPane(c *ui.Context, br *BruRequest, ts *tabState) {
 			}
 		})
 
-		// Bruno's section sub-tabs with count/status badges
-		sections := []string{"Params", "Body", "Headers", "Auth", "Vars", "Script", "Tests", "Assert", "Docs", "Settings"}
-		{
-			tabs := ui.TabsBase(c, &ts.section, len(sections))
-			tabs.List.Gap(2).Padding(0, 12).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
-				for i, name := range sections {
-					i, name := i, name
-					tab := tabs.Tab(i).Padding(8, 8)
-					tab.Children(func() {
-						col := t.TextMuted
-						if i == ts.section {
-							col = t.Text
-						}
-						badgeCount := 0
-						badgeDot := false
-						switch name {
-						case "Params":
-							badgeCount = len(r.ParamsQuery) + len(r.ParamsPath)
-						case "Headers":
-							badgeCount = len(r.Headers)
-						case "Vars":
-							badgeCount = len(r.VarsPreRequest) + len(r.VarsPostResponse)
-						case "Assert":
-							badgeCount = len(r.Assert)
-						case "Body":
-							badgeDot = r.Body != "" && r.Body != "none"
-						case "Auth":
-							badgeDot = r.Auth != "" && r.Auth != "none" && r.Auth != "inherit"
-						case "Script":
-							badgeDot = strings.TrimSpace(r.ScriptPreRequest) != "" || strings.TrimSpace(r.ScriptPostResponse) != ""
-						case "Tests":
-							badgeDot = strings.TrimSpace(r.Tests) != ""
-						case "Docs":
-							badgeDot = strings.TrimSpace(r.Docs) != ""
-						}
-
-						ui.Column(c).Gap(3).Children(func() {
-							ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-								ui.Text(c, name).FontSize(12).TextColor(col)
-								if badgeCount > 0 {
-									ui.Box(c).Background(t.Surface).Radius(8).Padding(0, 5).Children(func() {
-										ui.Text(c, fmt.Sprintf("%d", badgeCount)).FontSize(10).TextColor(t.TextMuted)
-									})
-								} else if badgeDot {
-									ui.Box(c).Width(6).Height(6).Radius(3).Background(t.Accent)
-								}
-							})
-							under := ui.Box(c).Height(2).FillWidth()
-							if i == ts.section {
-								under.Background(t.Accent)
-							}
-						})
-					})
-				}
+		// Bruno's section sub-tabs with count/status badges.
+		ui.Column(c).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+			sectionTabs(c, br.Path+"-sections", &ts.section, []tabItem{
+				{Label: "Params", Count: len(r.ParamsQuery) + len(r.ParamsPath)},
+				{Label: "Body", Dot: r.Body != "" && r.Body != "none"},
+				{Label: "Headers", Count: len(r.Headers)},
+				{Label: "Auth", Dot: r.Auth != "" && r.Auth != "none" && r.Auth != "inherit"},
+				{Label: "Vars", Count: len(r.VarsPreRequest) + len(r.VarsPostResponse)},
+				{Label: "Script", Dot: strings.TrimSpace(r.ScriptPreRequest) != "" || strings.TrimSpace(r.ScriptPostResponse) != ""},
+				{Label: "Tests", Dot: strings.TrimSpace(r.Tests) != ""},
+				{Label: "Assert", Count: len(r.Assert)},
+				{Label: "Docs", Dot: strings.TrimSpace(r.Docs) != ""},
+				{Label: "Settings", Dot: len(r.Settings) > 0},
 			})
-		}
+		})
 		ui.Scroll(c).Grow(1).Padding(8, 12).Children(func() {
 			switch ts.section {
 			case 0:
@@ -1959,86 +1913,56 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 		sres := ts.script
 		ts.mu.Unlock()
 
-		ui.Row(c).Padding(8, 12).Gap(8).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+		// Row 1: status, time, size; copy and clear on the right.
+		ui.Row(c).Padding(8, 12, 4, 12).Gap(6).AlignItems(ui.Center).MinHeight(36).Children(func() {
+			pill := func(bg, fg ui.Color, icon *ui.SVG, text string, bold bool) {
+				ui.Row(c).Gap(4).Background(bg).Radius(4).Padding(3, 8).AlignItems(ui.Center).Shrink(0).Children(func() {
+					if icon != nil {
+						ui.Icon(c, icon).Size(12, 12).TextColor(fg)
+					}
+					tx := ui.Text(c, text).FontSize(12).TextColor(fg).NoWrap()
+					if bold {
+						tx.Bold()
+					}
+				})
+			}
 			switch {
 			case sending:
-				ui.Row(c).Gap(5).Padding(2, 8).Background(t.Accent.Alpha(0.12)).Radius(4).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Gap(5).Padding(3, 8).Background(t.Accent.Alpha(0.12)).Radius(4).AlignItems(ui.Center).Children(func() {
 					spin := ui.Icon(c, iconLoader).Size(13, 13).TextColor(t.Accent)
 					spin.Rotate(spin.Loop("spin", time.Second, ui.Linear) * 360)
-					ui.Text(c, "发送中…").FontSize(12).Bold().TextColor(t.Accent)
+					ui.Text(c, "发送中…").FontSize(12).Bold().TextColor(t.Accent).NoWrap()
 				})
 			case serr != nil:
-				ui.Row(c).Gap(4).Padding(2, 8).Background(t.Danger.Alpha(0.12)).Radius(4).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "错误: "+serr.Error()).FontSize(12).Bold().TextColor(t.Danger)
-				})
+				ui.Text(c, "错误: "+serr.Error()).FontSize(12).Bold().TextColor(t.Danger).Grow(1).MinWidth(0).MaxLines(2)
 			case res != nil && res.ErrorCode != "":
-				ui.Row(c).Gap(4).Padding(2, 8).Background(t.Danger.Alpha(0.12)).Radius(4).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, string(res.ErrorCode)+": "+res.ErrorMessage).FontSize(12).Bold().TextColor(t.Danger)
-				})
+				pill(t.Danger.Alpha(0.12), t.Danger, nil, errorCodeLabel(res.ErrorCode), true)
+				ui.Text(c, res.ErrorMessage).FontSize(12).TextColor(t.Danger).Grow(1).MinWidth(0).MaxLines(2)
 			case head != nil:
-				col := methodGet // Green #10b981
-				if head.StatusCode >= 400 {
-					col = methodDelete // Red #ef4444
-				} else if head.StatusCode >= 300 {
-					col = methodPost // Amber #f59e0b
-				}
-				ui.Box(c).Background(col.Alpha(0.14)).Radius(4).Padding(2, 8).Children(func() {
-					ui.Textf(c, "%d %s", head.StatusCode, head.StatusText).Bold().FontSize(12).TextColor(col)
-				})
+				col := statusColor(head.StatusCode)
+				pill(col.Alpha(0.14), col, nil, fmt.Sprintf("%d %s", head.StatusCode, head.StatusText), true)
 				if res != nil {
-					ui.Row(c).Gap(4).Background(t.Surface).Radius(4).Padding(2, 7).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconClock).Size(12, 12).TextColor(t.TextMuted)
-						ui.Textf(c, "%.0f ms", res.DurationMs).FontSize(11).TextColor(t.TextMuted)
-					})
+					pill(t.Surface, t.TextMuted, iconClock, fmtDuration(res.DurationMs), false)
 					sizeStr := humanBytes(res.SizeBytes)
 					if res.Truncated {
 						sizeStr += " (已截断)"
 					}
-					ui.Row(c).Gap(4).Background(t.Surface).Radius(4).Padding(2, 7).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, iconDatabase).Size(12, 12).TextColor(t.TextMuted)
-						ui.Text(c, sizeStr).FontSize(11).TextColor(t.TextMuted)
-					})
+					pill(t.Surface, t.TextMuted, iconDatabase, sizeStr, false)
 				}
 			default:
 				ui.Text(c, "Response").Bold().FontSize(13)
 			}
 			ui.Box(c).Grow(1)
 			if head != nil || res != nil {
-				headersLabel := "Headers"
-				if head != nil && len(head.Headers) > 0 {
-					headersLabel = fmt.Sprintf("Headers (%d)", len(head.Headers))
+				copyIcon, copyTip := iconCopy, "复制响应"
+				if time.Now().Before(a.copyTimer) {
+					copyIcon, copyTip = iconCheck, "已复制"
 				}
-				ui.Segmented(c, &ts.respSection, "Body", headersLabel, "Timeline", testsLabel(sres))
-				if ts.respSection == 0 && res != nil && res.BodyKind == send.BodyKindText && res.ErrorCode == "" {
-					if ui.Segmented(c, &ts.respFormat, "Pretty", "Raw").Changed() {
-						ts.mu.Lock()
-						ts.respBuf.Set(respDisplayTextFor(ts.result, ts.respFormat))
-						ts.mu.Unlock()
-					}
-				}
-				copied := time.Now().Before(a.copyTimer)
-				copyIcon := iconCopy
-				copyText := "复制"
-				if copied {
-					copyIcon = iconCheck
-					copyText = "已复制"
-				}
-				copyBtn := ui.Button(c, "").Gap(4).Padding(4, 8)
-				copyBtn.Children(func() {
-					ui.Icon(c, copyIcon).Size(13, 13)
-					ui.Text(c, copyText).FontSize(11)
-				})
-				if copyBtn.Clicked() {
+				if iconButton(c, copyIcon, copyTip).Clicked() {
 					a.services.WriteClipboard(ts.respBuf.String())
 					a.copyTimer = time.Now().Add(2 * time.Second)
 				}
-				clearBtn := ui.Button(c, "").Gap(4).Padding(4, 8).Label("清空响应")
-				clearBtn.Children(func() {
-					ui.Icon(c, iconTrash).Size(13, 13)
-					ui.Text(c, "清空").FontSize(11)
-				})
-				if clearBtn.Clicked() {
+				if iconButton(c, iconTrash, "清空响应").Clicked() {
 					ts.mu.Lock()
 					ts.head = nil
 					ts.result = nil
@@ -2049,6 +1973,31 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 				}
 			}
 		})
+		// Row 2: tabs, and Pretty/Raw for a text body.
+		if head != nil || res != nil {
+			ui.Row(c).AlignItems(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).Children(func() {
+				headers := tabItem{Label: "Headers"}
+				if head != nil {
+					headers.Count = len(head.Headers)
+				}
+				ui.Box(c).Grow(1).MinWidth(0).Children(func() {
+					sectionTabs(c, "resp-sections", &ts.respSection, []tabItem{
+						{Label: "Body"}, headers, {Label: "Timeline"}, testsTab(t, sres),
+					})
+				})
+				if ts.respSection == 0 && res != nil && res.BodyKind == send.BodyKindText && res.ErrorCode == "" {
+					ui.Box(c).Padding(0, 12, 6, 4).Children(func() {
+						if ui.Segmented(c, &ts.respFormat, "Pretty", "Raw").Changed() {
+							ts.mu.Lock()
+							ts.respBuf.Set(respDisplayTextFor(ts.result, ts.respFormat))
+							ts.mu.Unlock()
+						}
+					})
+				}
+			})
+		} else {
+			ui.Box(c).Height(1).FillWidth().Background(t.Border)
+		}
 		if ts.respSection == 1 && head != nil {
 			ui.Scroll(c).Grow(1).Padding(8, 12).Children(func() {
 				ui.Column(c).Gap(4).Children(func() {
@@ -2072,7 +2021,13 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					if !sentAt.IsZero() {
 						ui.Textf(c, "* 发起时间: %s", sentAt.Format("2006-01-02 15:04:05.000")).FontSize(12).TextColor(t.TextMuted)
 					}
-					if sentReq != nil {
+					if head != nil && head.Sent.Method != "" {
+						ui.Textf(c, "> %s %s", head.Sent.Method, head.Sent.URL).Bold().FontSize(12.5).TextColor(methodColor(t, head.Sent.Method))
+						for _, h := range head.Sent.Headers {
+							ui.Textf(c, "> %s: %s", h.Key, h.Value).FontSize(12).TextColor(t.TextMuted)
+						}
+					} else if sentReq != nil {
+						// No response: show the request as written.
 						ui.Textf(c, "> %s %s", sentReq.Method, sentReq.URL).Bold().FontSize(12.5).TextColor(methodColor(t, sentReq.Method))
 						for _, h := range sentReq.Headers {
 							if h.Enabled {
@@ -2083,12 +2038,7 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 					if head != nil {
 						ui.Box(c).Height(6)
 						ui.Textf(c, "* 最终地址: %s", head.URL).FontSize(12).TextColor(t.TextMuted)
-						col := methodGet
-						if head.StatusCode >= 400 {
-							col = methodDelete
-						} else if head.StatusCode >= 300 {
-							col = methodPost
-						}
+						col := statusColor(head.StatusCode)
 						ui.Textf(c, "< %s %d %s", head.Protocol, head.StatusCode, head.StatusText).Bold().FontSize(12.5).TextColor(col)
 						for _, h := range head.Headers {
 							ui.Textf(c, "< %s: %s", h.Key, h.Value).FontSize(12).TextColor(t.TextMuted)
@@ -2616,33 +2566,6 @@ func sortedCopy(s []string) []string {
 	return out
 }
 
-// testsLabel is the response "Tests" segment: passed/total once any
-// test or assertion ran.
-func testsLabel(r *script.Result) string {
-	if r == nil {
-		return "Tests"
-	}
-	total := len(r.Tests) + len(r.Asserts)
-	if total == 0 {
-		if len(r.Errors) > 0 {
-			return "Tests (!)"
-		}
-		return "Tests"
-	}
-	passed := 0
-	for _, t := range r.Tests {
-		if t.Passed {
-			passed++
-		}
-	}
-	for _, t := range r.Asserts {
-		if t.Passed {
-			passed++
-		}
-	}
-	return fmt.Sprintf("Tests (%d/%d)", passed, total)
-}
-
 // testsPane lists script errors, test and assertion outcomes and the
 // console output of the last send.
 func (a *app) testsPane(c *ui.Context, r *script.Result) {
@@ -2726,4 +2649,75 @@ func (a *app) runtimeDict() bru.Dict {
 		d = append(d, bru.Entry{Key: v.Key, Value: v.Value, Enabled: true})
 	}
 	return d
+}
+
+// statusColor colors an HTTP status: green 2xx, amber 3xx, red 4xx/5xx.
+func statusColor(code int) ui.Color {
+	switch {
+	case code >= 400:
+		return methodDelete
+	case code >= 300:
+		return methodPost
+	}
+	return methodGet
+}
+
+// fmtDuration shows ms below a second, seconds above.
+func fmtDuration(ms float64) string {
+	if ms >= 1000 {
+		return fmt.Sprintf("%.2f s", ms/1000)
+	}
+	return fmt.Sprintf("%.0f ms", ms)
+}
+
+// errorCodeLabel names a send failure for the status pill.
+func errorCodeLabel(code send.ErrorCode) string {
+	switch code {
+	case send.ErrTimeout:
+		return "超时"
+	case send.ErrNetwork:
+		return "网络错误"
+	case send.ErrCanceled:
+		return "已取消"
+	case send.ErrInvalidReq:
+		return "请求无效"
+	case send.ErrScript:
+		return "脚本错误"
+	case send.ErrAuth:
+		return "认证失败"
+	case send.ErrBodyRead:
+		return "读取失败"
+	}
+	return string(code)
+}
+
+// testsTab labels the response Tests tab: passed/total, green when all
+// pass and red otherwise; "!" for script errors with no tests.
+func testsTab(t *ui.Theme, r *script.Result) tabItem {
+	it := tabItem{Label: "Tests"}
+	if r == nil {
+		return it
+	}
+	total, passed := len(r.Tests)+len(r.Asserts), 0
+	for _, x := range r.Tests {
+		if x.Passed {
+			passed++
+		}
+	}
+	for _, x := range r.Asserts {
+		if x.Passed {
+			passed++
+		}
+	}
+	switch {
+	case total > 0:
+		it.Badge = fmt.Sprintf("%d/%d", passed, total)
+		it.BadgeColor = t.Success
+		if passed < total || len(r.Errors) > 0 {
+			it.BadgeColor = t.Danger
+		}
+	case len(r.Errors) > 0:
+		it.Badge, it.BadgeColor = "!", t.Danger
+	}
+	return it
 }

@@ -94,6 +94,16 @@ type ResponseHead struct {
 	Protocol      string `json:"protocol"`
 	Headers       []Pair `json:"headers"`
 	ContentLength int64  `json:"contentLength"`
+	// Sent is the request as it went out: variables resolved, auth
+	// attached (the first hop; URL above is where redirects ended).
+	Sent SentRequest `json:"sent"`
+}
+
+// SentRequest is the wire view of a request for the timeline.
+type SentRequest struct {
+	Method  string `json:"method"`
+	URL     string `json:"url"`
+	Headers []Pair `json:"headers"`
 }
 
 // BodyKind classifies the response body for display.

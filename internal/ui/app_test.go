@@ -383,8 +383,8 @@ test("items", () => expect(res.body.items).to.have.lengthOf(4));`
 	if len(r.Tests) != 2 || !r.Tests[0].Passed || r.Tests[1].Passed || len(r.Asserts) != 1 || !r.Asserts[0].Passed {
 		t.Fatalf("results %+v", r)
 	}
-	if testsLabel(r) != "Tests (2/3)" {
-		t.Fatalf("label %q", testsLabel(r))
+	if tab := testsTab(ui.LightTheme(), r); tab.Badge != "2/3" || tab.BadgeColor != ui.LightTheme().Danger {
+		t.Fatalf("tests tab %+v", tab)
 	}
 	if v, _ := env.Vars.Get("lastStatus"); v != "200" {
 		t.Fatalf("env var not applied: %+v", env.Vars)
@@ -400,7 +400,7 @@ test("items", () => expect(res.body.items).to.have.lengthOf(4));`
 
 	ts.respSection = 3
 	tt := ui.NewTester(a.view, 1200, 800)
-	for _, want := range []string{"Tests (2/3)", "items", "got 3"} {
+	for _, want := range []string{"Tests", "2/3", "items", "got 3"} {
 		if !tt.HasText(want) {
 			t.Fatalf("tests pane missing %q: %q", want, tt.Texts())
 		}

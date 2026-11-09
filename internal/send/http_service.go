@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		return fail(ErrInvalidReq, err.Error()), nil
 	}
 
+	sent := req
 	resp, err := client.Do(req)
 	if err != nil {
 		return fail(classifyDoError(ctx, err), sanitizeRequestError(err)), nil
@@ -93,6 +95,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		} else if retry != nil {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			resp.Body.Close()
+			sent = retry
 			resp, err = client.Do(retry)
 			if err != nil {
 				return fail(classifyDoError(ctx, err), sanitizeRequestError(err)), nil
@@ -108,6 +111,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		Protocol:      resp.Proto,
 		Headers:       responseHeaderPairs(resp),
 		ContentLength: resp.ContentLength,
+		Sent:          sentRequestOf(sent),
 	}
 	if err := onHead(head); err != nil {
 		return ResponseResult{}, err // bridge failure: report as Go error
@@ -288,4 +292,20 @@ func classifyReadError(ctx context.Context, err error) ErrorCode {
 		return ErrBodyRead
 	}
 	return code
+}
+
+// sentRequestOf captures what the client sent, headers sorted by name.
+func sentRequestOf(req *http.Request) SentRequest {
+	names := make([]string, 0, len(req.Header))
+	for k := range req.Header {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	out := SentRequest{Method: req.Method, URL: req.URL.String()}
+	for _, k := range names {
+		for _, v := range req.Header[k] {
+			out.Headers = append(out.Headers, Pair{Key: k, Value: v, Enabled: true})
+		}
+	}
+	return out
 }
