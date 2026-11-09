@@ -17,8 +17,8 @@ Bruno-style API client workbench built on [mygo](https://github.com/egoist/mygo)
 - Generate Code (request menu): cURL, JavaScript fetch, Python requests, Go net/http and HTTPie, from the request as it would be sent.
 - Scripts run on [goja](https://github.com/dop251/goja): pre-request scripts (collection → folders → request) may change the request before variables resolve; after the response come `vars:post-response`, post-response scripts, the `assert` block and `tests` (request → folders → collection). The response pane's **Tests** tab shows results, script errors and console output. A pre-request script that throws stops the send.
 - Script API: `req` (get/set URL, method, headers, body), `res` (`status`, `headers`, parsed `body`, `res('a.b[0]')`, getters), `bru` (`get/setVar`, `get/setEnvVar` with `{persist: true}`, collection/folder/request var getters, `interpolate`, `getProcessEnv`, `sleep`), `test()` (sync or async), chai-style `expect`, `console.*`. Each phase is capped at 10 s.
-
 - Import a Postman v2.0/v2.1 export ("导入 Postman 集合…" on the welcome screen or in the collection menu) as a new collection: folders, requests, bodies, auth (basic, bearer, API key, digest, OAuth2), collection variables. Scripts, file uploads and unsupported auth are skipped and listed.
+- Import an OpenAPI 3.x document (JSON or YAML; "导入 OpenAPI 文档…"): operations become requests grouped by their first tag, `servers[0]` becomes `baseUrl`, parameters and body examples are filled in, and security schemes map to auth using `{{token}}`, `{{apiKey}}`, `{{username}}` and `{{password}}`, which the environment must define. Swagger 2.0 is not supported. Callbacks, webhooks, OAuth2 flows and file fields are skipped and listed.
 - Collection runner ("运行集合" in the collection menu, "运行目录" on a folder): sends every request in sidebar order with an optional delay, runtime and environment variables carried from one request to the next, and lists each request's status, time and tests (filter by passed / failed / skipped; select one for its tests, response and headers). Scripts steer it with `bru.setNextRequest(name)` / `bru.runner.setNextRequest(name)` (jump to a request by name; `null` ends the run), `bru.runner.skipRequest()` and `bru.runner.stopExecution()`.
 
 ## Layout
@@ -64,4 +64,4 @@ go test ./...
 
 - In scripts: `require()` of npm/Node modules, timers, `bru.runRequest`/`sendRequest`.
 - OAuth2 `authorization_code` (browser callback); AWSv4/WSSE/NTLM signing.
-- Insomnia/OpenAPI import; binary file bodies; Postman `pm.*` scripts (not imported).
+- Insomnia import; binary file bodies; Postman `pm.*` scripts (not imported).

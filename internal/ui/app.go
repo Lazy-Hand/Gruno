@@ -804,6 +804,7 @@ func (a *app) welcome(c *ui.Context) {
 			})
 
 			card(iconBox, "导入 Postman 集合…", "从 Postman 导出的 JSON 文件新建集合", a.importPostman)
+			card(iconBox, "导入 OpenAPI 文档…", "从 OpenAPI 3.x 的 JSON 或 YAML 文件新建集合", a.importOpenAPI)
 		})
 
 		if len(a.recentDirs) > 0 {
@@ -857,6 +858,9 @@ func (a *app) collectionMenu(m *ui.Menu) {
 	}
 	if m.Item("导入 Postman 集合…").Chosen() {
 		a.importPostman()
+	}
+	if m.Item("导入 OpenAPI 文档…").Chosen() {
+		a.importOpenAPI()
 	}
 	if m.Item("重命名集合…").Chosen() {
 		a.renameCollIn = a.coll.Name

@@ -15,13 +15,20 @@ import (
 	"gruno/internal/importer"
 )
 
-// importPostman asks for a Postman export, a directory for the new
-// collection, writes it and opens it.
+// importPostman imports a Postman export as a new collection.
 func (a *app) importPostman() {
-	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-		Title:   "选择 Postman 集合文件",
-		Filters: []mygo.FileFilter{{Name: "JSON", Extensions: []string{"json"}}},
-	})
+	a.importFile("选择 Postman 集合文件", []mygo.FileFilter{{Name: "JSON", Extensions: []string{"json"}}}, importer.ParsePostman)
+}
+
+// importOpenAPI imports an OpenAPI 3.x document as a new collection.
+func (a *app) importOpenAPI() {
+	a.importFile("选择 OpenAPI 文档", []mygo.FileFilter{{Name: "OpenAPI", Extensions: []string{"json", "yaml", "yml"}}}, importer.ParseOpenAPI)
+}
+
+// importFile asks for a file, parses it with parse, asks for a directory
+// for the new collection, writes it and opens it.
+func (a *app) importFile(title string, filters []mygo.FileFilter, parse func([]byte) (*importer.Collection, error)) {
+	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Title: title, Filters: filters})
 	if err != nil || len(paths) == 0 {
 		return
 	}
@@ -30,7 +37,7 @@ func (a *app) importPostman() {
 		mygo.Dialog.Error("读取失败", err.Error())
 		return
 	}
-	imp, err := importer.ParsePostman(data)
+	imp, err := parse(data)
 	if err != nil {
 		mygo.Dialog.Error("导入失败", err.Error())
 		return

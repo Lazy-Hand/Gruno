@@ -1,0 +1,140 @@
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: 1.0.0
+servers:
+  - url: https://petstore.test/v2/
+  - url: https://staging.petstore.test/v2
+security:
+  - apiKeyAuth: []
+paths:
+  /pets:
+    parameters:
+      - $ref: '#/components/parameters/TraceHeader'
+    get:
+      tags: [Pets]
+      summary: List pets
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            example: 20
+        - name: status
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [available, sold]
+      responses:
+        "200":
+          description: ok
+    post:
+      tags: [Pets]
+      operationId: createPet
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+      responses:
+        "201":
+          description: created
+  /pets/{petId}:
+    get:
+      tags: [Pets]
+      summary: Get a pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+            example: "42"
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ok
+  /store/order:
+    post:
+      summary: Place an order
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                petId:
+                  type: integer
+                quantity:
+                  type: integer
+                  default: 1
+      responses:
+        "200":
+          description: ok
+    put:
+      summary: Upload a photo
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                caption:
+                  type: string
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: ok
+  /legacy/trace:
+    delete:
+      summary: Delete with cookie
+      parameters:
+        - name: session
+          in: cookie
+          schema:
+            type: string
+      responses:
+        "204":
+          description: gone
+components:
+  parameters:
+    TraceHeader:
+      name: X-Trace
+      in: header
+      required: true
+      schema:
+        type: string
+        example: abc
+  schemas:
+    Category:
+      type: object
+      properties:
+        name:
+          type: string
+          example: dogs
+    Pet:
+      type: object
+      properties:
+        name:
+          type: string
+          example: Rex
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+        status:
+          type: string
+          enum: [available, sold]
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: query
+      name: api_key
+    bearerAuth:
+      type: http
+      scheme: bearer

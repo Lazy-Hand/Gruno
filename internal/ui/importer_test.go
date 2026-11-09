@@ -65,3 +65,41 @@ func TestWriteImportRoundTrip(t *testing.T) {
 		t.Fatalf("run order %d", n)
 	}
 }
+
+func TestWriteOpenAPIRoundTrip(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "importer", "testdata", "petstore.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imp, err := importer.ParseOpenAPI(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "petstore")
+	c, err := CreateCollection(root, imp.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeImport(c, imp); err != nil {
+		t.Fatal(err)
+	}
+	re, err := OpenCollection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if re.Dot == nil || re.Dot.Auth != "apikey" {
+		t.Fatalf("collection auth %+v", re.Dot)
+	}
+	f := re.folderByPath("Pets")
+	if f == nil {
+		t.Fatal("Pets folder missing")
+	}
+	a := newApp()
+	a.coll = re
+	if n := len(a.runOrder("")); n != 6 {
+		t.Fatalf("run order %d", n)
+	}
+	if n := len(a.requestsIn("Pets")); n != 3 {
+		t.Fatalf("Pets requests %d", n)
+	}
+}

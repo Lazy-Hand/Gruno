@@ -33,6 +33,11 @@
   the welcome screen or the collection menu. Folders, requests, bodies,
   auth and collection variables carry over; scripts, file uploads and
   unsupported auth are skipped and listed when the import finishes
+- Import an OpenAPI 3.x document (JSON or YAML) as a new collection:
+  operations are grouped into folders by their first tag, servers become
+  the baseUrl variable, examples fill parameters and bodies, and security
+  schemes become auth with {{token}}, {{apiKey}}, {{username}} and
+  {{password}} variables for the environment to define
 ## [0.2.0] - 2026-11-08
 
 - Scripts run: pre-request and post-response scripts at collection,
