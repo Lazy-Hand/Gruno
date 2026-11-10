@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.2] - 2026-11-10
+
+- 修复每次更新后需重新授予系统权限：Release 构建改用固定 Apple Development 签名身份，TCC 授权跨更新保留
+
 ## [0.2.1] - 2026-11-09
 
 - Variables live inside the fields: a {{name}} shows as a chip —
