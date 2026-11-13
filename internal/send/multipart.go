@@ -34,12 +34,6 @@ func multipartValue(v string) (text string, files []string, contentType string) 
 	return v, nil, contentType
 }
 
-// IsFileValue reports whether a form value names files.
-func IsFileValue(v string) bool {
-	_, files, _ := multipartValue(v)
-	return len(files) > 0
-}
-
 // encodeMultipart writes rows as multipart/form-data and returns the
 // body and its Content-Type with the boundary.
 func encodeMultipart(rows []Pair, base string) ([]byte, string, error) {

@@ -43,8 +43,11 @@ func (a *app) oauth2Fields(c *ui.Context, br *BruRequest, keyPrefix string, d *b
 		sel("grant_type", "client_credentials", oauth2Grants)
 		grant := orDefaultS(dictValue(*d, "grant_type"), "client_credentials")
 		if grant == "authorization_code" {
-			ui.Text(c, "authorization_code 需要浏览器登录回调，暂不支持；请改用 client_credentials 或 password").
-				FontSize(12).TextColor(t.Warning)
+			a.authFieldRow(c, br, keyPrefix, d, "authorization_url", false, onSave)
+			a.authFieldRow(c, br, keyPrefix, d, "callback_url", false, onSave)
+			ui.Text(c, "回调地址留空时自动监听 127.0.0.1 的随机端口；只接受本机回环地址。发送请求时会打开浏览器登录。").
+				FontSize(11).TextColor(t.TextMuted)
+			flag("pkce", "使用 PKCE (S256)")
 		}
 		a.authFieldRow(c, br, keyPrefix, d, "access_token_url", false, onSave)
 		a.authFieldRow(c, br, keyPrefix, d, "client_id", false, onSave)

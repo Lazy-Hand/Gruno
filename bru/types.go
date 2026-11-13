@@ -36,9 +36,10 @@ func (d Dict) Get(key string) (string, bool) {
 
 // Meta is the request's meta block.
 type Meta struct {
-	Name string `json:"name"`
-	Type string `json:"type"` // "http" normally
-	Seq  int    `json:"seq"`  // order among siblings, 0 keeps file order
+	Name string   `json:"name"`
+	Type string   `json:"type"` // "http" normally, "ws" for WebSocket
+	Seq  int      `json:"seq"`  // order among siblings, 0 keeps file order
+	Tags []string `json:"tags,omitempty"`
 }
 
 // Request is one request .bru file.
@@ -84,10 +85,25 @@ type Request struct {
 	// followRedirects, maxRedirects.
 	Settings Dict
 
+	// WSMessages are the saved messages of a WebSocket request
+	// (body:ws), in file order.
+	WSMessages []WSMessage
+
 	// Extra keeps blocks this package does not model, written back
 	// verbatim so saving never drops what newer Bruno versions add.
 	Extra []RawBlock
 }
+
+// WSMessage is one saved WebSocket message: a name, a kind (text, json,
+// xml) and its body.
+type WSMessage struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Body string `json:"body"`
+}
+
+// IsWebSocket reports whether the request is a WebSocket one.
+func (r *Request) IsWebSocket() bool { return strings.EqualFold(r.Meta.Type, "ws") }
 
 // RawBlock is an unmodeled top-level block, content lines as in the
 // file.
@@ -95,6 +111,41 @@ type RawBlock struct {
 	Tag   string
 	Open  byte // '{' or '['
 	Lines []string
+}
+
+// Clone returns a deep copy: every dictionary and raw block is copied,
+// so editing the copy never changes the original.
+func (r *Request) Clone() *Request {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Headers = cloneDict(r.Headers)
+	out.ParamsQuery = cloneDict(r.ParamsQuery)
+	out.ParamsPath = cloneDict(r.ParamsPath)
+	out.BodyFormURLEnc = cloneDict(r.BodyFormURLEnc)
+	out.BodyMultipart = cloneDict(r.BodyMultipart)
+	out.AuthBasic = cloneDict(r.AuthBasic)
+	out.AuthBearer = cloneDict(r.AuthBearer)
+	out.AuthAPIKey = cloneDict(r.AuthAPIKey)
+	out.AuthOAuth2 = cloneDict(r.AuthOAuth2)
+	out.AuthDigest = cloneDict(r.AuthDigest)
+	out.VarsPreRequest = cloneDict(r.VarsPreRequest)
+	out.VarsPostResponse = cloneDict(r.VarsPostResponse)
+	out.Assert = cloneDict(r.Assert)
+	out.Settings = cloneDict(r.Settings)
+	out.Extra = make([]RawBlock, len(r.Extra))
+	for i, rb := range r.Extra {
+		out.Extra[i] = RawBlock{Tag: rb.Tag, Open: rb.Open, Lines: append([]string(nil), rb.Lines...)}
+	}
+	return &out
+}
+
+func cloneDict(d Dict) Dict {
+	if d == nil {
+		return nil
+	}
+	return append(Dict(nil), d...)
 }
 
 // UpperMethod returns the HTTP method for request lines: uppercase of
@@ -114,6 +165,9 @@ type Environment struct {
 	Name    string
 	Vars    Dict
 	Secrets []string
+	// CRLF records the file's line endings for round-tripping; the
+	// writer is in the store, which sets it on load.
+	CRLF bool
 }
 
 // CollectionBru is the optional collection.bru file: collection-level

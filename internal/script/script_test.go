@@ -1,8 +1,10 @@
 package script
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"gruno/internal/send"
 )
@@ -165,5 +167,25 @@ func TestRunnerControl(t *testing.T) {
 	s.PostResponse(req, Response{Status: 200}, []Script{{Label: "请求", Source: `bru.setNextRequest(null); bru.runner.stopExecution()`}}, nil, nil, nil)
 	if !s.Run.NextSet || !s.Run.NextNull || !s.Run.Stop || len(s.Result.Errors) != 0 {
 		t.Fatalf("run %+v errs %+v", s.Run, s.Result.Errors)
+	}
+}
+
+func TestSleepStopsWhenContextIsCanceled(t *testing.T) {
+	sess := NewSession(&Vars{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sess.Ctx = ctx
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	err := sess.PreRequest(&send.RequestData{Method: "GET", URL: "http://x"},
+		[]Script{{Label: "t", Source: "bru.sleep(5000);"}})
+	if err != nil {
+		t.Fatalf("sleep script: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("sleep ignored cancellation: %s", elapsed)
 	}
 }

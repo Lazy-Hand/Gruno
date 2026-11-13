@@ -21,6 +21,10 @@ const (
 	BodyText       BodyMode = "text"
 	BodyURLEncoded BodyMode = "urlencoded"
 	BodyMultipart  BodyMode = "multipart"
+	// BodyUnsupported marks a body kind Gruno cannot send yet
+	// (body:file, body:sparql): sending reports it rather than silently
+	// dropping the body.
+	BodyUnsupported BodyMode = "unsupported"
 )
 
 // BodySpec is the request body editor state. Switching modes keeps the
@@ -87,6 +91,10 @@ type SendInput struct {
 	Request  RequestData `json:"request"`
 	Scopes   [][]Pair    `json:"scopes"`
 	Settings Settings    `json:"settings"`
+	// OnBody, when set, receives text chunks as a streaming response
+	// arrives (SSE and other live text streams) and is never called for
+	// binary bodies. It runs on the send goroutine.
+	OnBody func(string) `json:"-"`
 }
 
 // ResponseHead arrives on the send channel as soon as response headers are
@@ -136,9 +144,12 @@ const (
 
 // ResponseResult is the final outcome of a send, body included.
 type ResponseResult struct {
-	BodyKind     BodyKind  `json:"bodyKind"`
-	BodyText     string    `json:"bodyText"`
-	SizeBytes    int64     `json:"sizeBytes"`
+	BodyKind  BodyKind `json:"bodyKind"`
+	BodyText  string   `json:"bodyText"`
+	SizeBytes int64    `json:"sizeBytes"`
+	// FullSize is the response's real size when Truncated (from
+	// Content-Length when the server sent one).
+	FullSize     int64     `json:"fullSize,omitempty"`
 	Truncated    bool      `json:"truncated"`
 	DurationMs   float64   `json:"durationMs"`
 	ErrorCode    ErrorCode `json:"errorCode"`

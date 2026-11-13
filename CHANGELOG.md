@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.2.3] - 2026-11-12
+
+- 修复表格行删除崩溃（Params/Headers/Vars/Assert/表单、环境编辑器、客户端证书）
+- 修复打开无效集合目录后按 ⌘S/⌘Enter 的空指针崩溃；失败时清空旧标签
+- 解析失败的 collection.bru / folder.bru / 环境文件不再被默认内容覆盖
+- 克隆请求改为深拷贝；保存保留文件原有 CRLF 换行
+- Digest 认证使用解析后的用户名/密码；查询参数不再二次编码
+- Cookie 删除覆盖所有 Path；OAuth2 缓存键包含密钥/密码/位置
+- 环境变量中的 process.env 只有在真实存在时才显示为可解析
+- secret 读取失败不再缓存；截断响应显示真实大小；脚本 sleep 可取消
+- 编辑器保存防抖（300ms）+ 定时刷盘；变量列表/侧边栏树/运行结果按帧缓存
+- 动态变量 {{$guid}}、{{$timestamp}}、{{$random*}} 等
+- 目录设置对话框（Headers/Auth/Vars/Script/Tests/Docs）写回 folder.bru
+- 支持 settings.encodeUrl: false；响应可保存到文件；Cookie 可手工添加
+- OAuth2 authorization_code + PKCE（回环回调、浏览器授权）
+- 集合运行器支持 CSV/JSON 数据文件逐行执行，并导出 JUnit 报告
+- WebSocket 请求（Bruno 的 meta.type ws / ws / body:ws 格式）：连接、发送消息、收发记录，保存后仍是 Bruno 可读格式
+- SSE / 流式文本响应边接收边显示，取消后保留已收到的数据；运行器跳过 SSE 与 WebSocket 请求
+- 支持 Bruno 的 `body { ... }` JSON 体、meta.tags 数组，以及旧式 params / vars 块
+- 移除死代码（sortedCopy、IsFileValue、SortBySeq、空 if），合并重复的认证映射
+- 读盘/网络/缓存等性能与隐私修正见 README
+
 ## [0.2.2] - 2026-11-10
 
 - 修复每次更新后需重新授予系统权限：Release 构建改用固定 Apple Development 签名身份，TCC 授权跨更新保留

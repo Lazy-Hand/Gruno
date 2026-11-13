@@ -35,6 +35,9 @@ type Store struct {
 
 	mu     sync.Mutex
 	cached []byte
+	// doc is the last file read or written, so a burst of secret reads
+	// does not re-read and re-parse the JSON each time.
+	doc *file
 }
 
 // New returns a store over the file at path.
@@ -56,6 +59,9 @@ func envID(collectionRoot, env string) string {
 }
 
 func (s *Store) load() (file, error) {
+	if s.doc != nil {
+		return *s.doc, nil
+	}
 	f := file{Version: 1, Entries: map[string]string{}}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -70,6 +76,7 @@ func (s *Store) load() (file, error) {
 	if f.Entries == nil {
 		f.Entries = map[string]string{}
 	}
+	s.doc = &f
 	return f, nil
 }
 
@@ -83,9 +90,15 @@ func (s *Store) save(f file) error {
 	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		s.doc = nil
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		s.doc = nil
+		return err
+	}
+	s.doc = &f
+	return nil
 }
 
 func (s *Store) aead() (cipher.AEAD, error) {

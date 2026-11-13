@@ -2,8 +2,8 @@ package ui
 
 import (
 	"net/http"
-	"strings"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"

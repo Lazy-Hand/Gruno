@@ -118,7 +118,7 @@ func TestOAuth2Rejections(t *testing.T) {
 		hdr  []Pair
 		want string
 	}{
-		{OAuth2Spec{GrantType: "authorization_code", AccessTokenURL: "http://x", AutoFetch: true}, nil, "暂不支持"},
+		{OAuth2Spec{GrantType: "authorization_code", AccessTokenURL: "http://x", AutoFetch: true}, nil, "authorization_url"},
 		{OAuth2Spec{AutoFetch: true}, nil, "access_token_url"},
 		{OAuth2Spec{AccessTokenURL: "http://127.0.0.1:1"}, nil, "自动获取"},
 		{OAuth2Spec{AccessTokenURL: "http://x", AutoFetch: true}, []Pair{pair("Authorization", "x")}, "冲突"},

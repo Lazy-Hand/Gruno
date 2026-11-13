@@ -5,7 +5,7 @@ package ui
 
 import (
 	"encoding/json"
-	"path/filepath"
+	"net/url"
 	"strings"
 
 	"gruno/bru"
@@ -22,32 +22,47 @@ func dictPairs(d bru.Dict) []send.Pair {
 	return out
 }
 
+// authBlocks are the auth dictionaries of a request or collection.
+type authBlocks struct {
+	basic, bearer, apiKey, digest, oauth2 bru.Dict
+}
+
+// authSpec maps a selector and its blocks to an AuthSpec; "inherit" is
+// resolved by the caller.
+func authSpec(sel string, b authBlocks) send.AuthSpec {
+	switch sel {
+	case "basic":
+		return send.AuthSpec{Mode: send.AuthBasic,
+			Username: get(b.basic, "username"), Password: get(b.basic, "password")}
+	case "bearer":
+		return send.AuthSpec{Mode: send.AuthBearer, Token: get(b.bearer, "token")}
+	case "apikey":
+		return send.AuthSpec{Mode: send.AuthAPIKey,
+			Key: get(b.apiKey, "key"), Value: get(b.apiKey, "value"),
+			Location: send.AuthLocation(orDefaultS(get(b.apiKey, "placement"), "header"))}
+	case "digest":
+		return send.AuthSpec{Mode: send.AuthDigest,
+			Username: get(b.digest, "username"), Password: get(b.digest, "password")}
+	case "oauth2":
+		return oauth2AuthSpec(b.oauth2)
+	case "awsv4", "wsse", "ntlm":
+		return send.AuthSpec{Mode: send.AuthMode(sel)}
+	default:
+		return send.AuthSpec{Mode: send.AuthNone}
+	}
+}
+
 // bruAuthSpec maps a .bru auth selector + blocks to an AuthSpec.
 // "inherit" resolves to the collection/folder auth of the request.
 func bruAuthSpec(sel string, r *BruRequest, c *Collection) send.AuthSpec {
 	req := r.Req
-	switch sel {
-	case "basic":
-		return send.AuthSpec{Mode: send.AuthBasic,
-			Username: get(req.AuthBasic, "username"), Password: get(req.AuthBasic, "password")}
-	case "bearer":
-		return send.AuthSpec{Mode: send.AuthBearer, Token: get(req.AuthBearer, "token")}
-	case "apikey":
-		return send.AuthSpec{Mode: send.AuthAPIKey,
-			Key: get(req.AuthAPIKey, "key"), Value: get(req.AuthAPIKey, "value"),
-			Location: send.AuthLocation(orDefaultS(get(req.AuthAPIKey, "placement"), "header"))}
-	case "digest":
-		return send.AuthSpec{Mode: send.AuthDigest,
-			Username: get(req.AuthDigest, "username"), Password: get(req.AuthDigest, "password")}
-	case "oauth2":
-		return oauth2AuthSpec(req.AuthOAuth2)
-	case "awsv4", "wsse", "ntlm":
-		return send.AuthSpec{Mode: send.AuthMode(sel)}
-	case "inherit":
+	if sel == "inherit" {
 		return collectionAuthSpec(c, r)
-	default:
-		return send.AuthSpec{Mode: send.AuthNone}
 	}
+	return authSpec(sel, authBlocks{
+		basic: req.AuthBasic, bearer: req.AuthBearer, apiKey: req.AuthAPIKey,
+		digest: req.AuthDigest, oauth2: req.AuthOAuth2,
+	})
 }
 
 // collectionAuthSpec finds the effective auth for "inherit": innermost
@@ -70,23 +85,10 @@ func collectionAuthSpec(c *Collection, r *BruRequest) send.AuthSpec {
 
 // cbAuthSpec maps a CollectionBru auth selector to an AuthSpec.
 func cbAuthSpec(cb *bru.CollectionBru) send.AuthSpec {
-	switch cb.Auth {
-	case "basic":
-		return send.AuthSpec{Mode: send.AuthBasic,
-			Username: get(cb.AuthBasic, "username"), Password: get(cb.AuthBasic, "password")}
-	case "bearer":
-		return send.AuthSpec{Mode: send.AuthBearer, Token: get(cb.AuthBearer, "token")}
-	case "apikey":
-		return send.AuthSpec{Mode: send.AuthAPIKey,
-			Key: get(cb.AuthAPIKey, "key"), Value: get(cb.AuthAPIKey, "value"),
-			Location: send.AuthLocation(orDefaultS(get(cb.AuthAPIKey, "placement"), "header"))}
-	case "digest":
-		return send.AuthSpec{Mode: send.AuthDigest,
-			Username: get(cb.AuthDigest, "username"), Password: get(cb.AuthDigest, "password")}
-	case "oauth2":
-		return oauth2AuthSpec(cb.AuthOAuth2)
-	}
-	return send.AuthSpec{Mode: send.AuthNone}
+	return authSpec(cb.Auth, authBlocks{
+		basic: cb.AuthBasic, bearer: cb.AuthBearer, apiKey: cb.AuthAPIKey,
+		digest: cb.AuthDigest, oauth2: cb.AuthOAuth2,
+	})
 }
 
 // bruBodySpec maps the selector to a BodySpec; unsupported modes keep
@@ -111,8 +113,12 @@ func bruBodySpec(sel string, r *bru.Request) send.BodySpec {
 			return send.BodySpec{Mode: send.BodyJSON, Text: `{"query":` + string(q) + `,"variables":` + r.BodyGraphQLVars + `}`}
 		}
 		return send.BodySpec{Mode: send.BodyJSON, Text: `{"query":` + string(q) + `}`}
-	default:
+	case "", "none":
 		return send.BodySpec{Mode: send.BodyNone}
+	default:
+		// file, sparql and kinds newer Bruno adds: keep the block, but
+		// say so instead of sending an empty body.
+		return send.BodySpec{Mode: send.BodyUnsupported, Text: sel}
 	}
 }
 
@@ -141,14 +147,9 @@ func (c *Collection) sendInputOf(r *BruRequest) send.SendInput {
 	for _, d := range c.varScopes(r) {
 		scopes = append(scopes, dictPairs(d))
 	}
-	syncQueryToURL(r.Req)
-
 	// With param rows the URL ships as path only; the rows compose the
 	// query at send. A literal query in a never-opened file survives.
-	url := r.Req.URL
-	if len(r.Req.ParamsQuery) > 0 {
-		url, _, _ = strings.Cut(url, "?")
-	}
+	url := sendURL(r.Req)
 
 	body := bruBodySpec(r.Req.Body, r.Req)
 	body.FileBase = c.Root
@@ -167,6 +168,47 @@ func (c *Collection) sendInputOf(r *BruRequest) send.SendInput {
 	}
 }
 
+// sendURL is the URL a send uses: with query rows present the URL
+// ships as path only, since the rows compose the query. Never mutates.
+func sendURL(r *bru.Request) string {
+	if len(r.ParamsQuery) > 0 {
+		path, _, _ := strings.Cut(r.URL, "?")
+		return path
+	}
+	return r.URL
+}
+
+// encodeQueryPart escapes s but keeps {{name}} runs literal, so a
+// template stays a template in the .bru file.
+func encodeQueryPart(s string) string {
+	var b strings.Builder
+	rest := s
+	for {
+		i := strings.Index(rest, "{{")
+		if i < 0 {
+			b.WriteString(url.QueryEscape(rest))
+			return b.String()
+		}
+		j := strings.Index(rest[i:], "}}")
+		if j < 0 {
+			b.WriteString(url.QueryEscape(rest))
+			return b.String()
+		}
+		b.WriteString(url.QueryEscape(rest[:i]))
+		b.WriteString(rest[i : i+j+2])
+		rest = rest[i+j+2:]
+	}
+}
+
+// decodeQueryPart undoes percent/plus encoding, keeping the raw text
+// when it is not valid encoding.
+func decodeQueryPart(s string) string {
+	if v, err := url.QueryUnescape(s); err == nil {
+		return v
+	}
+	return s
+}
+
 // syncQueryToURL rewrites r.URL's query string from ParamsQuery. The
 // path (and any template vars in it) is kept untouched. With no rows
 // the URL — and its literal query — is kept as is.
@@ -180,7 +222,7 @@ func syncQueryToURL(r *bru.Request) {
 		if !e.Enabled || e.Key == "" {
 			continue
 		}
-		enc = append(enc, e.Key+"="+e.Value)
+		enc = append(enc, encodeQueryPart(e.Key)+"="+encodeQueryPart(e.Value))
 	}
 	r.URL = path
 	if len(enc) > 0 {
@@ -206,7 +248,7 @@ func urlQueryToParams(r *bru.Request) {
 		if k == "" {
 			continue
 		}
-		r.ParamsQuery = append(r.ParamsQuery, bru.Entry{Key: k, Value: v, Enabled: true})
+		r.ParamsQuery = append(r.ParamsQuery, bru.Entry{Key: decodeQueryPart(k), Value: decodeQueryPart(v), Enabled: true})
 	}
 }
 
@@ -233,7 +275,7 @@ func extractQueryToParams(r *bru.Request) {
 			if k == "" {
 				continue
 			}
-			e := bru.Entry{Key: k, Value: v, Enabled: true}
+			e := bru.Entry{Key: decodeQueryPart(k), Value: decodeQueryPart(v), Enabled: true}
 			if i < len(r.ParamsQuery) {
 				e.Enabled = r.ParamsQuery[i].Enabled
 			}
@@ -278,7 +320,9 @@ func syncPathParamsFromURL(r *bru.Request) {
 			}
 		}
 	}
-	if len(keys) == 0 && len(r.ParamsPath) == 0 {
+	if len(keys) == 0 {
+		// No :name segment in the URL: keep the rows. Templates such as
+		// {{baseUrl}} carry no path until resolution.
 		return
 	}
 	existing := map[string]bru.Entry{}
@@ -302,24 +346,51 @@ func syncPathParamsFromURL(r *bru.Request) {
 // scripts change them, the UI applies them back on its own thread.
 func (c *Collection) scriptVarsOf(r *BruRequest, runtime []script.RuntimeVar, envSecrets []send.Pair) *script.Vars {
 	v := &script.Vars{
-		ProcessEnv:     script.LoadDotEnv(filepath.Join(c.Root, ".env")),
+		ProcessEnv:     c.loadDotEnv(),
 		EnvName:        c.ActiveEnv,
 		CollectionName: c.Name,
 		Runtime:        append([]script.RuntimeVar(nil), runtime...),
 	}
-	if c.Dot != nil {
-		v.Collection = dictPairs(c.Dot.Vars)
+	scopes := c.scopeSet(r)
+	v.Collection = dictPairs(scopes.collection)
+	for _, d := range scopes.folders {
+		v.Folder = append(v.Folder, dictPairs(d)...)
 	}
-	for _, f := range c.folderChain(r) {
-		v.Folder = append(v.Folder, dictPairs(f.Bru.Vars)...)
+	v.Env = append(dictPairs(scopes.env), envSecrets...)
+	v.Request = dictPairs(scopes.request)
+	return v
+}
+
+// scopeSet is the ordered variable sources of a request, the one place
+// the precedence is written down.
+type scopeSet struct {
+	collection bru.Dict
+	folders    []bru.Dict // outermost first
+	env        bru.Dict
+	request    bru.Dict
+}
+
+func (c *Collection) scopeSet(r *BruRequest) scopeSet {
+	var s scopeSet
+	if c.Dot != nil {
+		s.collection = c.Dot.Vars
+	}
+	var parts []string
+	if r != nil && r.Folder != "" {
+		parts = strings.Split(r.Folder, "/")
+		for i := range parts {
+			if f := c.folderByPath(strings.Join(parts[:i+1], "/")); f != nil && f.Bru != nil {
+				s.folders = append(s.folders, f.Bru.Vars)
+			}
+		}
 	}
 	if env := c.activeEnvironment(); env != nil {
-		v.Env = append(dictPairs(env.Vars), envSecrets...)
+		s.env = env.Vars
 	}
 	if r != nil {
-		v.Request = dictPairs(r.Req.VarsPreRequest)
+		s.request = r.Req.VarsPreRequest
 	}
-	return v
+	return s
 }
 
 // folderChain returns r's folders that have a folder.bru, outermost
@@ -432,6 +503,9 @@ func oauth2AuthSpec(d bru.Dict) send.AuthSpec {
 	return send.AuthSpec{Mode: send.AuthOAuth2, OAuth2: &send.OAuth2Spec{
 		GrantType:            orDefaultS(get(d, "grant_type"), "client_credentials"),
 		AccessTokenURL:       get(d, "access_token_url"),
+		AuthorizationURL:     get(d, "authorization_url"),
+		CallbackURL:          get(d, "callback_url"),
+		PKCE:                 flag("pkce"),
 		RefreshTokenURL:      get(d, "refresh_token_url"),
 		ClientID:             get(d, "client_id"),
 		ClientSecret:         get(d, "client_secret"),

@@ -6,6 +6,7 @@ package send
 // does not apply and Set-Cookie headers survive intact.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -29,6 +30,10 @@ type HTTPService struct {
 	// Cookies keeps Set-Cookie responses and sends them back, unless a
 	// send's Settings.NoCookies opts out.
 	Cookies *CookieJar
+	// OpenURL opens an authorization page in the browser for an OAuth2
+	// authorization_code flow. The app sets it; nil fails the flow with
+	// a clear error.
+	OpenURL func(string) error
 }
 
 // NewHTTPService builds the service with in-memory dependencies only.
@@ -85,6 +90,17 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 	}
 
 	sent := req
+	// Digest credentials are hashed on challenge, after resolution.
+	var digestUser, digestPass string
+	if input.Request.Auth.Mode == AuthDigest {
+		var rerr error
+		if digestUser, rerr = resolver.resolveString(input.Request.Auth.Username); rerr != nil {
+			return fail(ErrAuth, rerr.Error()), nil
+		}
+		if digestPass, rerr = resolver.resolveString(input.Request.Auth.Password); rerr != nil {
+			return fail(ErrAuth, rerr.Error()), nil
+		}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fail(classifyDoError(ctx, err), sanitizeRequestError(err)), nil
@@ -92,7 +108,7 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 
 	// Digest: answer a 401 challenge with a computed second request.
 	if input.Request.Auth.Mode == AuthDigest {
-		if retry, rerr := digestRetry(req, resp, input.Request.Auth); rerr != nil {
+		if retry, rerr := digestRetry(req, resp, digestUser, digestPass); rerr != nil {
 			resp.Body.Close()
 			return fail(ErrInvalidReq, rerr.Error()), nil
 		} else if retry != nil {
@@ -120,9 +136,27 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		return ResponseResult{}, err // bridge failure: report as Go error
 	}
 
-	data, truncated, readErr := readBody(resp)
+	var onChunk func(string)
+	if input.OnBody != nil && streamable(resp) {
+		onChunk = input.OnBody
+	}
+	data, truncated, readErr := readBody(resp, onChunk)
 	if readErr != nil {
-		return fail(classifyReadError(ctx, readErr), sanitizeRequestError(readErr)), nil
+		code := classifyReadError(ctx, readErr)
+		res := fail(code, sanitizeRequestError(readErr))
+		// Keep what arrived: a canceled stream still shows its events.
+		if len(data) > 0 {
+			res.BodyKind, res.BodyText = classifyBody(resp, data, truncated)
+			if res.BodyKind == BodyKindText {
+				res.BodyText = strings.ToValidUTF8(res.BodyText, "")
+			}
+			res.SizeBytes = int64(len(data))
+			res.Truncated = truncated
+			if code == ErrCanceled {
+				res.Notes = append(res.Notes, "流已取消，保留已接收的数据")
+			}
+		}
+		return res, nil
 	}
 
 	kind, text := classifyBody(resp, data, truncated)
@@ -130,10 +164,15 @@ func (s *HTTPService) Send(ctx context.Context, input SendInput, onHead func(Res
 		// The cut may have landed inside a rune; drop the partial tail.
 		text = strings.ToValidUTF8(text, "")
 	}
+	full := int64(len(data))
+	if truncated && resp.ContentLength > full {
+		full = resp.ContentLength
+	}
 	return ResponseResult{
 		BodyKind:   kind,
 		BodyText:   text,
 		SizeBytes:  int64(len(data)),
+		FullSize:   full,
 		Truncated:  truncated,
 		DurationMs: elapsed(),
 		Notes:      notes,
@@ -154,9 +193,8 @@ func responseHeaderPairs(resp *http.Response) []Pair {
 	for name := range resp.Header {
 		names = append(names, name)
 	}
-	// sort.Strings would need the import; insertion order of a Go map is
-	// random, so sort for stable output.
-	sortStrings(names)
+	// Map iteration order is random; sort for stable output.
+	sort.Strings(names)
 	pairs := []Pair{}
 	for _, name := range names {
 		for _, value := range resp.Header[name] {
@@ -166,26 +204,79 @@ func responseHeaderPairs(resp *http.Response) []Pair {
 	return pairs
 }
 
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
+// readBody reads at most maxResponseBody bytes (setting truncated when
+// there is more) and hands text chunks to onChunk as they arrive, so a
+// live stream can be shown while it runs.
+func readBody(resp *http.Response, onChunk func(string)) (data []byte, truncated bool, err error) {
+	var all bytes.Buffer
+	buf := make([]byte, 32<<10)
+	var carry []byte
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			if all.Len() < maxResponseBody {
+				take := n
+				if rem := maxResponseBody - all.Len(); take > rem {
+					take = rem
+					truncated = true
+				}
+				all.Write(buf[:take])
+			} else {
+				truncated = true
+			}
+			if onChunk != nil && !truncated {
+				chunk := append(carry, buf[:n]...)
+				cut := len(chunk)
+				if !utf8.Valid(chunk) {
+					// A chunk may end mid-rune: hold back its tail for
+					// the next read.
+					for drop := 1; drop <= 3 && drop < len(chunk); drop++ {
+						if utf8.Valid(chunk[:len(chunk)-drop]) {
+							cut = len(chunk) - drop
+							break
+						}
+					}
+				}
+				if !utf8.Valid(chunk[:cut]) {
+					cut = len(chunk) // interior damage; show it as it is
+				}
+				carry = append(carry[:0], chunk[cut:]...)
+				if cut > 0 {
+					onChunk(string(chunk[:cut]))
+				}
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return all.Bytes(), truncated, rerr
 		}
 	}
+	if len(carry) > 0 && onChunk != nil && utf8.Valid(carry) {
+		onChunk(string(carry))
+	}
+	return all.Bytes(), truncated, nil
 }
 
-// readBody reads at most maxResponseBody+1 bytes so a truncated flag can
-// be set without downloading the rest. The probe byte is discarded.
-func readBody(resp *http.Response) (data []byte, truncated bool, err error) {
-	lr := io.LimitReader(resp.Body, maxResponseBody+1)
-	data, err = io.ReadAll(lr)
-	if err != nil {
-		return nil, false, err
+// streamable reports whether the response is live text worth handing to
+// the caller chunk by chunk (text/event-stream and other text bodies).
+func streamable(resp *http.Response) bool {
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		return false
 	}
-	if len(data) > maxResponseBody {
-		return data[:maxResponseBody], true, nil
+	mt, params, err := mime.ParseMediaType(ct)
+	if err != nil || !isTextual(strings.ToLower(mt)) {
+		return false
 	}
-	return data, false, nil
+	if cs, ok := params["charset"]; ok {
+		cs = strings.ToLower(strings.TrimSpace(strings.Trim(cs, `"`)))
+		if cs != "utf-8" && cs != "utf8" && cs != "us-ascii" && cs != "ascii" {
+			return false
+		}
+	}
+	return true
 }
 
 // classifyBody decides how data is displayed. Undecoded content

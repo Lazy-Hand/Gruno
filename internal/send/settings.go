@@ -6,8 +6,10 @@ package send
 // timeout of its own (the caller's context still bounds the send).
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -63,10 +65,13 @@ type Settings struct {
 	Timeout      time.Duration `json:"timeout"` // 0: none
 	NoRedirects  bool          `json:"noRedirects"`
 	MaxRedirects int           `json:"maxRedirects"` // 0: Go's default of 10
-	InsecureTLS  bool          `json:"insecureTls"`
-	CACertFile   string        `json:"caCertFile"` // PEM, added to the system pool
-	Proxy        ProxySettings `json:"proxy"`
-	ClientCerts  []ClientCert  `json:"clientCerts"`
+	// NoEncodeURL is the request's settings.encodeUrl: false. Query
+	// rows then go out unescaped, as Bruno sends them.
+	NoEncodeURL bool          `json:"noEncodeUrl,omitempty"`
+	InsecureTLS bool          `json:"insecureTls"`
+	CACertFile  string        `json:"caCertFile"` // PEM, added to the system pool
+	Proxy       ProxySettings `json:"proxy"`
+	ClientCerts []ClientCert  `json:"clientCerts"`
 	// NoCookies neither sends the jar's cookies nor keeps new ones.
 	NoCookies bool `json:"noCookies"`
 }
@@ -78,7 +83,9 @@ type transportKey struct {
 	caFile   string
 	proxy    string // resolved proxy URL, "system" or "none"
 	bypass   string
-	cert     ClientCert
+	// cert keys the client certificate by a hash of its configuration,
+	// so a passphrase is not kept in plaintext in the cache key.
+	cert string
 }
 
 type transportCache struct {
@@ -120,9 +127,11 @@ func (s *HTTPService) clientFor(st Settings, target *url.URL, r *varResolver) (*
 		key.proxy = u.String()
 		key.bypass = st.Proxy.Bypass
 	}
+	var cert ClientCert
 	if target != nil {
 		if cc, ok := matchClientCert(st.ClientCerts, target); ok {
-			key.cert = cc
+			key.cert = certKey(cc)
+			cert = cc
 		}
 	}
 
@@ -132,7 +141,7 @@ func (s *HTTPService) clientFor(st Settings, target *url.URL, r *varResolver) (*
 	} else {
 		var err error
 		tr, err = s.transports.get(key, func() (*http.Transport, error) {
-			return buildTransport(key, proxyURL)
+			return buildTransport(key, proxyURL, cert)
 		})
 		if err != nil {
 			return nil, err
@@ -158,7 +167,14 @@ func (s *HTTPService) clientFor(st Settings, target *url.URL, r *varResolver) (*
 	return c, nil
 }
 
-func buildTransport(k transportKey, proxyURL *url.URL) (*http.Transport, error) {
+// certKey hashes a client certificate configuration for the transport
+// cache key (the passphrase included, so a changed one rebuilds).
+func certKey(cc ClientCert) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{cc.Domain, cc.CertFile, cc.KeyFile, cc.PFXFile, cc.Passphrase}, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+func buildTransport(k transportKey, proxyURL *url.URL, cert ClientCert) (*http.Transport, error) {
 	tr := netproxy.Transport().Clone()
 	tlsCfg := &tls.Config{InsecureSkipVerify: k.insecure}
 	if k.caFile != "" {
@@ -175,12 +191,12 @@ func buildTransport(k transportKey, proxyURL *url.URL) (*http.Transport, error) 
 		}
 		tlsCfg.RootCAs = pool
 	}
-	if k.cert != (ClientCert{}) {
-		cert, err := loadClientCert(k.cert)
+	if k.cert != "" {
+		tc, err := loadClientCert(cert)
 		if err != nil {
 			return nil, err
 		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
+		tlsCfg.Certificates = []tls.Certificate{tc}
 	}
 	tr.TLSClientConfig = tlsCfg
 	switch k.proxy {

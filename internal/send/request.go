@@ -54,7 +54,11 @@ func (r *varResolver) lookup(name string) (string, bool) {
 // resolveVar resolves one variable name to its final value.
 func (r *varResolver) resolveVar(name string) (string, error) {
 	if strings.HasPrefix(name, "$") {
-		return "", fmt.Errorf("不支持 Postman 动态变量 %s", "{{"+name+"}}")
+		if v, ok := dynamicVar(name); ok {
+			r.cache[name] = v
+			return v, nil
+		}
+		return "", fmt.Errorf("未知动态变量 %s", "{{"+name+"}}")
 	}
 	if v, ok := r.cache[name]; ok {
 		return v, nil
@@ -235,7 +239,7 @@ func prepareRequest(ctx context.Context, input SendInput) (*http.Request, error)
 	if err != nil {
 		return nil, err
 	}
-	appendRawQuery(u, query)
+	appendRawQuery(u, query, !input.Settings.NoEncodeURL)
 
 	// Body first: its mode decides the default Content-Type.
 	var bodyReader io.Reader
@@ -279,6 +283,12 @@ func prepareRequest(ctx context.Context, input SendInput) (*http.Request, error)
 		}
 		bodyReader = bytes.NewReader(data)
 		contentType = ct
+	case BodyUnsupported:
+		kind := strings.TrimSpace(req.Body.Text)
+		if kind == "" {
+			kind = "unknown"
+		}
+		return nil, fmt.Errorf("请求体类型 %q 暂不支持（支持 none、json、text、xml、form-urlencoded、multipart-form、graphql）", kind)
 	default:
 		return nil, fmt.Errorf("未知请求体模式 %q", req.Body.Mode)
 	}
@@ -386,14 +396,19 @@ func applyPathParams(u *url.URL, values map[string]string) error {
 func pathSuffix(s string) string { return s }
 
 // appendRawQuery appends resolved query rows to u.RawQuery in order,
-// preserving duplicate keys. Values are escaped exactly once.
-func appendRawQuery(u *url.URL, rows []Pair) {
+// preserving duplicate keys. Values are escaped exactly once unless
+// encode is false (the request's encodeUrl setting).
+func appendRawQuery(u *url.URL, rows []Pair, encode bool) {
 	if len(rows) == 0 {
 		return
 	}
 	var parts []string
 	for _, p := range rows {
-		parts = append(parts, url.QueryEscape(p.Key)+"="+url.QueryEscape(p.Value))
+		if encode {
+			parts = append(parts, url.QueryEscape(p.Key)+"="+url.QueryEscape(p.Value))
+		} else {
+			parts = append(parts, p.Key+"="+p.Value)
+		}
 	}
 	extra := strings.Join(parts, "&")
 	if u.RawQuery == "" {
@@ -469,7 +484,7 @@ func applyAuth(r *varResolver, a AuthSpec, req *http.Request, manualHeaders, man
 			if err != nil {
 				return err
 			}
-			appendRawQuery(u, []Pair{{Key: key, Value: value, Enabled: true}})
+			appendRawQuery(u, []Pair{{Key: key, Value: value, Enabled: true}}, true)
 			req.URL = u
 			req.RequestURI = ""
 			return nil

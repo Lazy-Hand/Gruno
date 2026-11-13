@@ -89,7 +89,7 @@ func digestAuthorization(method, uri, user, pass string, ch map[string]string) (
 
 // digestRetry returns a re-issued request carrying the Digest response
 // if resp is a 401 challenge, else nil.
-func digestRetry(req *http.Request, resp *http.Response, a AuthSpec) (*http.Request, error) {
+func digestRetry(req *http.Request, resp *http.Response, user, pass string) (*http.Request, error) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		return nil, nil
 	}
@@ -104,7 +104,7 @@ func digestRetry(req *http.Request, resp *http.Response, a AuthSpec) (*http.Requ
 		return nil, nil
 	}
 	uri := req.URL.RequestURI()
-	auth, err := digestAuthorization(req.Method, uri, a.Username, a.Password, ch)
+	auth, err := digestAuthorization(req.Method, uri, user, pass, ch)
 	if err != nil {
 		return nil, err
 	}

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -117,10 +116,38 @@ type app struct {
 	runner      *runnerState
 	runnerSplit float32
 
-	// varFields is the state of each varInput, by field key.
+	// varFields is the state of each varInput, by field key; varPass
+	// caches the variable list for one build pass so a table of inputs
+	// does not rebuild it per row.
 	varFields map[string]*varFieldState
-	mdOpts     markdown.Options
+	varPass   map[string][]varEntry
+	mdOpts    markdown.Options
+
+	// Editor saves are debounced: saveDue holds each request's pending
+	// deadline and saveTimer asks for a frame when it passes. saveErr
+	// shows the last write failure in the status bar.
+	saveDue   map[*BruRequest]time.Time
+	saveTimer *time.Timer
+	saveErr   string
+
+	// Folder settings modal.
+	folderSettingsOpen bool
+	folderSettingsTab  int
+	folderSettingsFol  *Folder
+	folderScriptPre    *editor.State
+	folderScriptPost   *editor.State
+	folderTestsEd      *editor.State
+	folderDocsEd       *editor.State
+
+	// New-cookie form of the cookie modal.
+	cookieHost  string
+	cookieName  string
+	cookieValue string
 }
+
+// saveDebounce is how long after the last keystroke an editor buffer is
+// written to disk: bursts of typing cost one write, not one per key.
+const saveDebounce = 300 * time.Millisecond
 
 // tabState is per-open-request transient state: editor buffers, the
 // section tab, the in-flight send and its result.
@@ -160,6 +187,10 @@ type tabState struct {
 	// savedVers tracks each buffer's version at last flush to disk, so
 	// Modified()'s sticky flag doesn't re-save every frame.
 	savedVers map[*editor.Buffer]uint64
+
+	// ws is the WebSocket connection, transcript and message editors of
+	// a ws request tab.
+	ws *wsState
 }
 
 var methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -171,8 +202,10 @@ var bodyKinds = []string{"none", "json", "text", "xml", "form-urlencoded", "mult
 var authKinds = []string{"none", "inherit", "basic", "bearer", "apikey", "digest", "oauth2", "awsv4", "wsse", "ntlm"}
 
 func newApp() *app {
+	svc := send.NewHTTPService()
+	svc.OpenURL = openBrowser
 	return &app{
-		svc:              send.NewHTTPService(),
+		svc:              svc,
 		tabs:             map[string]*tabState{},
 		folderOpen:       map[string]bool{},
 		revealAuth:       map[string]bool{},
@@ -188,9 +221,9 @@ func newApp() *app {
 
 // prefsData persists last opened collection and recent collection paths.
 type prefsData struct {
-	Collection string   `json:"collection"`
-	Recents    []string `json:"recents,omitempty"`
-	Theme      string   `json:"theme,omitempty"`
+	Collection string    `json:"collection"`
+	Recents    []string  `json:"recents,omitempty"`
+	Theme      string    `json:"theme,omitempty"`
 	Network    *netPrefs `json:"network,omitempty"`
 }
 
@@ -201,9 +234,22 @@ func (a *app) openCollection(dir string) {
 	c, err := OpenCollection(dir)
 	if err != nil {
 		a.openErr = err.Error()
+		a.flushSaves(true)
+		a.closeRunner()
+		for _, ts := range a.tabs {
+			a.wsDisconnect(ts)
+		}
 		a.coll = nil
+		a.open = nil
+		a.active = ""
+		a.tabs = map[string]*tabState{}
+		a.folderOpen = map[string]bool{}
+		a.runtimeVars = nil
+		a.secretCache = nil
+		a.secretErr = ""
 		return
 	}
+	a.flushSaves(true)
 	a.openErr = ""
 	a.closeRunner()
 	a.coll = c
@@ -324,6 +370,9 @@ func (a *app) openTab(br *BruRequest) {
 			return
 		}
 	}
+	// Bruno mirrors URL query and :path segments into the param tables
+	// on open, once — not on every render pass.
+	urlQueryToParams(br.Req)
 	a.open = append(a.open, br)
 	a.active = br.Path
 }
@@ -331,6 +380,12 @@ func (a *app) openTab(br *BruRequest) {
 func (a *app) closeTab(path string) {
 	for i, t := range a.open {
 		if t.Path == path {
+			if _, pending := a.saveDue[t]; pending {
+				a.save(t)
+			}
+			if ts, ok := a.tabs[t.Path]; ok {
+				a.wsDisconnect(ts)
+			}
 			a.open = append(a.open[:i], a.open[i+1:]...)
 			delete(a.tabs, path)
 			if a.active == path {
@@ -358,12 +413,14 @@ func (a *app) activeTab() (*BruRequest, *tabState) {
 
 // tabState returns (creating) the transient state of br.
 func (a *app) tabState(br *BruRequest) *tabState {
-	// Bruno mirrors URL query into the params table on open.
-	urlQueryToParams(br.Req)
 	if ts, ok := a.tabs[br.Path]; ok {
 		return ts
 	}
-	ts := &tabState{method: strings.ToUpper(orDefaultS(br.Req.Method, "get"))}
+	method := strings.ToUpper(orDefaultS(br.Req.Method, "get"))
+	if br.Req.IsWebSocket() {
+		method = "WS"
+	}
+	ts := &tabState{method: method}
 	lang := ".txt"
 	if br.Req.Body == "json" || br.Req.Body == "graphql" {
 		lang = ".json"
@@ -424,17 +481,70 @@ func setBodyText(r *bru.Request, text string) {
 	}
 }
 
-// save writes br's file; failures surface in the tab's error line.
+// save writes br's file now; failures show in the status bar.
 func (a *app) save(br *BruRequest) {
+	if a.coll == nil || br == nil {
+		return
+	}
+	delete(a.saveDue, br)
 	if err := a.coll.SaveRequest(br); err != nil {
-		// Save failures are rare (disk full, perms); surface via dialog.
-		mygo.Dialog.Error("保存失败", err.Error())
+		a.saveErr = "保存失败: " + err.Error()
+		return
+	}
+	a.saveErr = ""
+}
+
+// saveSoon debounces br's write: the timer asks for a frame once the
+// deadline passes, and the frame writes on the UI thread.
+func (a *app) saveSoon(br *BruRequest) {
+	if a.coll == nil || br == nil {
+		return
+	}
+	if a.saveDue == nil {
+		a.saveDue = map[*BruRequest]time.Time{}
+	}
+	a.saveDue[br] = time.Now().Add(saveDebounce)
+	if a.saveTimer == nil {
+		a.saveTimer = time.AfterFunc(saveDebounce+10*time.Millisecond, a.services.Invalidate)
+	} else {
+		a.saveTimer.Reset(saveDebounce + 10*time.Millisecond)
+	}
+}
+
+// saveCollection writes collection.bru, surfacing failures.
+func (a *app) saveCollection() {
+	if a.coll == nil {
+		return
+	}
+	if err := a.coll.SaveCollectionBru(); err != nil {
+		a.saveErr = "保存 collection.bru 失败: " + err.Error()
+		return
+	}
+	a.saveErr = ""
+}
+
+// flushSaves writes due pending saves; force writes them all.
+func (a *app) flushSaves(force bool) {
+	if len(a.saveDue) == 0 || a.coll == nil {
+		return
+	}
+	now := time.Now()
+	for br, due := range a.saveDue {
+		if !force && now.Before(due) {
+			continue
+		}
+		delete(a.saveDue, br)
+		if err := a.coll.SaveRequest(br); err != nil {
+			a.saveErr = "保存失败: " + err.Error()
+		} else {
+			a.saveErr = ""
+		}
 	}
 }
 
 // send fires the request in the background.
 func (a *app) send(br *BruRequest, ts *tabState) {
-	if ts.sending {
+	if a.coll == nil || ts.sending || br.Req.IsWebSocket() {
 		return
 	}
 	a.syncFromUI(br, ts)
@@ -454,6 +564,7 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	ts.scriptVars = nil
 	ts.sentReq = &reqSnap
 	ts.sentAt = time.Now()
+	ts.respBuf.Set("")
 	ts.mu.Unlock()
 	// The client applies the configured timeout; cancel stops the send.
 	input.Settings = a.sendSettings(br)
@@ -462,6 +573,7 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 	svc, services := a.svc, a.services
 	go func() {
 		sess := script.NewSession(vars)
+		sess.Ctx = ctx
 		finish := func(res *send.ResponseResult, err error) {
 			ts.mu.Lock()
 			ts.sending = false
@@ -487,6 +599,24 @@ func (a *app) send(br *BruRequest, ts *tabState) {
 		ts.mu.Lock()
 		ts.sentReq = &sent
 		ts.mu.Unlock()
+
+		// Text bodies stream into the pane as they arrive (SSE and other
+		// live responses); frames are requested at most every 50 ms.
+		var frameMu sync.Mutex
+		var lastFrame time.Time
+		input.OnBody = func(chunk string) {
+			n := ts.respBuf.Len()
+			ts.respBuf.Edit(editor.Edit{Start: n, End: n, Text: chunk})
+			frameMu.Lock()
+			due := time.Since(lastFrame) > 50*time.Millisecond
+			if due {
+				lastFrame = time.Now()
+			}
+			frameMu.Unlock()
+			if due {
+				services.Invalidate()
+			}
+		}
 
 		var head send.ResponseHead
 		res, err := svc.Send(ctx, input, func(h send.ResponseHead) error {
@@ -545,6 +675,10 @@ func respDisplayTextFor(r *send.ResponseResult, format int) string {
 		return ""
 	}
 	if r.ErrorCode != "" {
+		if r.BodyText != "" {
+			// A canceled stream keeps what arrived, then names the error.
+			return r.BodyText + "\n\n[" + r.ErrorMessage + "]"
+		}
 		return r.ErrorMessage
 	}
 	if r.BodyKind == send.BodyKindBinary {
@@ -642,6 +776,8 @@ func methodBgColor(t *ui.Theme, m string) ui.Color {
 func (a *app) view(c *ui.Context) {
 	c.SetTheme(a.resolveTheme(c.Theme()))
 	a.services = c.Services()
+	a.varPass = map[string][]varEntry{}
+	a.flushSaves(false)
 	for _, ts := range a.tabs {
 		a.applyScriptVars(ts)
 	}
@@ -726,6 +862,9 @@ func (a *app) statusBar(c *ui.Context) {
 		AlignItems(ui.Center).Children(func() {
 		ui.Image(c, brunoLogoSVG).Size(15, 15)
 		ui.Text(c, "Gruno "+appVersion()).FontSize(11).Bold().TextColor(t.TextMuted)
+		if a.saveErr != "" {
+			ui.Text(c, a.saveErr).FontSize(11).TextColor(t.Danger).MaxLines(1)
+		}
 		if a.coll != nil {
 			ui.Text(c, "•").FontSize(11).TextColor(t.TextMuted)
 			ui.Icon(c, iconBox).Size(12, 12).TextColor(t.TextMuted)
@@ -936,7 +1075,6 @@ func (a *app) envMenu(m *ui.Menu) {
 	}
 }
 
-
 // envPicker is the top-right environment selector, as in Bruno.
 func (a *app) envPicker(c *ui.Context) {
 	names := []string{"No Environment"}
@@ -956,7 +1094,9 @@ func (a *app) envPicker(c *ui.Context) {
 		if env == "No Environment" {
 			env = ""
 		}
-		a.coll.SetActiveEnv(env)
+		if err := a.coll.SetActiveEnv(env); err != nil {
+			a.saveErr = "保存 bruno.json 失败: " + err.Error()
+		}
 	}
 	cfgBtn := ui.Button(c, "").Padding(5, 7).Label("环境设置")
 	cfgBtn.Children(func() { ui.Icon(c, iconSettings).Size(15, 15) })
@@ -984,8 +1124,12 @@ func (a *app) sidebar(c *ui.Context) {
 		ui.Row(c).Padding(2, 10, 8, 10).AlignItems(ui.Center).Gap(4).Children(func() {
 			ui.SearchField(c, &a.filter).Grow(1).Placeholder("筛选请求...")
 		})
+		idx := a.newTreeIndex()
+		if a.filter != "" {
+			idx.markMatches(a)
+		}
 		ui.Scroll(c).Grow(1).Padding(2, 4).Children(func() {
-			a.treeLevel(c, "", 0)
+			a.treeLevel(c, idx, "", 0)
 		})
 	})
 }
@@ -1001,44 +1145,69 @@ func (a *app) matchesFilter(r *BruRequest) bool {
 		strings.Contains(strings.ToLower(r.FileName), q)
 }
 
-// folderChildren returns direct child folders of parent ("" = root),
-// in collection order.
-func (a *app) folderChildren(parent string) []*Folder {
-	prefix := parent
-	var out []*Folder
-	for _, f := range a.coll.Folders {
-		if parentOf(f.Path) == prefix {
-			out = append(out, f)
-		}
-	}
-	return out
+// treeIndex groups the collection tree once per frame, so rendering a
+// level does not rescan every folder and request.
+type treeIndex struct {
+	folders  map[string][]*Folder
+	requests map[string][]*BruRequest
+	match    map[string]bool // folder path -> subtree has a filter match
 }
 
-// requestsIn returns direct requests of folder in seq order.
-func (a *app) requestsIn(folder string) []*BruRequest {
-	var out []*BruRequest
-	for _, r := range a.coll.Requests {
-		if r.Folder == folder {
-			out = append(out, r)
-		}
+func (a *app) newTreeIndex() *treeIndex {
+	idx := &treeIndex{folders: map[string][]*Folder{}, requests: map[string][]*BruRequest{}}
+	for _, f := range a.coll.Folders {
+		parent := parentOf(f.Path)
+		idx.folders[parent] = append(idx.folders[parent], f)
 	}
-	return out
+	for _, r := range a.coll.Requests {
+		idx.requests[r.Folder] = append(idx.requests[r.Folder], r)
+	}
+	return idx
+}
+
+// markMatches records bottom-up which folders hold a matching request.
+func (idx *treeIndex) markMatches(a *app) {
+	idx.match = map[string]bool{}
+	var walk func(string) bool
+	walk = func(path string) bool {
+		hit := false
+		for _, r := range idx.requests[path] {
+			if a.matchesFilter(r) {
+				hit = true
+				break
+			}
+		}
+		for _, f := range idx.folders[path] {
+			if walk(f.Path) {
+				hit = true
+			}
+		}
+		idx.match[path] = hit
+		return hit
+	}
+	walk("")
+}
+
+// requestsIn returns the direct requests of folder in order. Tests and
+// the tree use the index above; this stays for callers that want one
+// folder only.
+func (a *app) requestsIn(folder string) []*BruRequest {
+	return a.newTreeIndex().requests[folder]
 }
 
 // treeLevel renders one level of the collection tree at depth: folder
 // rows with a chevron, then request rows with a colored method — as
 // Bruno's sidebar draws them.
-func (a *app) treeLevel(c *ui.Context, parent string, depth int) {
+func (a *app) treeLevel(c *ui.Context, idx *treeIndex, parent string, depth int) {
 	t := c.Theme()
 	ui.Column(c).Gap(1).Children(func() {
-		for _, f := range a.folderChildren(parent) {
+		for _, f := range idx.folders[parent] {
 			f := f
 			open, known := a.folderOpen[f.Path]
 			if !known {
 				open = true
 			}
-			hasMatch := a.filter != "" && a.folderHasMatch(f.Path)
-			if a.filter != "" && !hasMatch {
+			if a.filter != "" && !idx.match[f.Path] {
 				continue
 			}
 			chevronSvg := iconChevronDown
@@ -1058,10 +1227,10 @@ func (a *app) treeLevel(c *ui.Context, parent string, depth int) {
 			}
 			row.ContextMenu(func(m *ui.Menu) { a.folderMenu(m, f) })
 			if open || a.filter != "" {
-				a.treeLevel(c, f.Path, depth+1)
+				a.treeLevel(c, idx, f.Path, depth+1)
 			}
 		}
-		for _, r := range a.requestsIn(parent) {
+		for _, r := range idx.requests[parent] {
 			r := r
 			if !a.matchesFilter(r) {
 				continue
@@ -1070,7 +1239,7 @@ func (a *app) treeLevel(c *ui.Context, parent string, depth int) {
 			if label == "" {
 				label = r.FileName
 			}
-			m := strings.ToUpper(r.Req.Method)
+			m := requestMethod(r.Req)
 			row := ui.Row(c).Gap(6).Padding(3, 8).PaddingStart(6 + float32(depth)*14).
 				AlignItems(ui.Center).Radius(4).Children(func() {
 				ui.Box(c).Background(methodBgColor(t, m)).Radius(3).Padding(1, 0).Width(40).AlignItems(ui.Center).Children(func() {
@@ -1087,16 +1256,6 @@ func (a *app) treeLevel(c *ui.Context, parent string, depth int) {
 			row.ContextMenu(func(m *ui.Menu) { a.requestMenu(m, r) })
 		}
 	})
-}
-
-// folderHasMatch reports whether the subtree contains a filtered name.
-func (a *app) folderHasMatch(path string) bool {
-	for _, r := range a.coll.Requests {
-		if (r.Folder == path || strings.HasPrefix(r.Path, path+"/")) && a.matchesFilter(r) {
-			return true
-		}
-	}
-	return false
 }
 
 // requestMenu is the context menu of a request row.
@@ -1148,6 +1307,9 @@ func (a *app) folderMenu(m *ui.Menu, f *Folder) {
 	}
 	if m.Item("运行目录").Chosen() {
 		a.openRunner(f.Path)
+	}
+	if m.Item("目录设置…").Chosen() {
+		a.openFolderSettings(f)
 	}
 	if m.Item("重命名目录…").Chosen() {
 		a.renameFolder = f
@@ -1218,7 +1380,7 @@ func (a *app) tabBar(c *ui.Context) {
 					if label == "" {
 						label = tb.FileName
 					}
-					m := strings.ToUpper(tb.Req.Method)
+					m := requestMethod(tb.Req)
 					isActive := tb.Path == a.active
 					el := ui.Row(c).Gap(5).Padding(6, 10).AlignItems(ui.Center).Radius(4, 4, 0, 0).Children(func() {
 						ui.Text(c, m).FontSize(10).Bold().TextColor(methodColor(t, m))
@@ -1289,6 +1451,10 @@ func (a *app) tabBar(c *ui.Context) {
 
 // editor renders the request editor and response pane in side-by-side or vertical split.
 func (a *app) editor(c *ui.Context, br *BruRequest, ts *tabState) {
+	if br.Req.IsWebSocket() {
+		a.wsPane(c, br, ts)
+		return
+	}
 	if a.layoutHorizontal {
 		ui.SplitPercent(c, &a.vsplit, func() {
 			a.requestPane(c, br, ts)
@@ -1460,8 +1626,6 @@ func (a *app) docsSection(c *ui.Context, br *BruRequest, ts *tabState) {
 	ui.Column(c).Gap(6).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "文档说明 (Markdown)").Bold().FontSize(12).Grow(1)
-			if !ts.docsPreview {
-			}
 			btnIcon := iconEye
 			btnLabel := "预览 Markdown"
 			if ts.docsPreview {
@@ -1520,7 +1684,7 @@ func (a *app) watchBuffers(c *ui.Context, br *BruRequest, ts *tabState) {
 	flush(ts.testsEd.Buffer, func(s string) { br.Req.Tests = s })
 	flush(ts.docsEd.Buffer, func(s string) { br.Req.Docs = s })
 	if dirty {
-		a.save(br)
+		a.saveSoon(br)
 	}
 }
 
@@ -1565,7 +1729,9 @@ func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix strin
 			ui.Text(c, "VALUE").FontSize(11).Bold().TextColor(t.TextMuted).Grow(1)
 			ui.Box(c).Width(24) // delete placeholder
 		})
-		// Table rows
+		// Table rows. A delete is applied after the loop: removing while
+		// ranging would shift the indexes under the loop.
+		deleteAt := -1
 		for i := range *d {
 			i := i
 			e := &(*d)[i]
@@ -1584,10 +1750,13 @@ func (a *app) dictTableCustom(c *ui.Context, d *bru.Dict, label, keyPrefix strin
 				delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除行")
 				delBtn.Children(func() { ui.Icon(c, iconTrash).Size(13, 13).TextColor(t.TextMuted) })
 				if delBtn.Clicked() {
-					*d = append((*d)[:i], (*d)[i+1:]...)
-					onEdit()
+					deleteAt = i
 				}
 			})
+		}
+		if deleteAt >= 0 && deleteAt < len(*d) {
+			*d = append((*d)[:deleteAt], (*d)[deleteAt+1:]...)
+			onEdit()
 		}
 		if len(*d) == 0 {
 			ui.Row(c).Padding(8, 12).BorderWidth(0, 1, 1, 1).BorderColor(t.Border.Alpha(0.6)).Children(func() {
@@ -1709,6 +1878,19 @@ func (a *app) bodyEditor(c *ui.Context, br *BruRequest, ts *tabState) {
 			editor.View(c.Key(br.Path+"-gql-v"), ts.gqlVarsEd).Height(120).FillWidth()
 		})
 	default:
+		supported := false
+		for _, bk := range bodyKinds {
+			if bk == kind {
+				supported = true
+			}
+		}
+		if !supported {
+			ui.Column(c).Padding(20, 0).AlignItems(ui.Center).Children(func() {
+				ui.Textf(c, "请求体类型 %q 暂不支持发送；请改用受支持的类型（发送时会报错，不会静默丢弃请求体）", kind).
+					FontSize(12).TextColor(t.Warning)
+			})
+			return
+		}
 		ui.Row(c).Padding(2, 0, 6, 0).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, strings.ToUpper(kind)).Bold().FontSize(11).TextColor(t.TextMuted).Grow(1)
 			if kind == "json" {
@@ -1889,7 +2071,11 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 				pill(col.Alpha(0.14), col, nil, fmt.Sprintf("%d %s", head.StatusCode, head.StatusText), true)
 				if res != nil {
 					pill(t.Surface, t.TextMuted, iconClock, fmtDuration(res.DurationMs), false)
-					sizeStr := humanBytes(res.SizeBytes)
+					size := res.SizeBytes
+					if res.FullSize > size {
+						size = res.FullSize
+					}
+					sizeStr := humanBytes(size)
 					if res.Truncated {
 						sizeStr += " (已截断)"
 					}
@@ -1907,6 +2093,9 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 				if iconButton(c, copyIcon, copyTip).Clicked() {
 					a.services.WriteClipboard(ts.respBuf.String())
 					a.copyTimer = time.Now().Add(2 * time.Second)
+				}
+				if iconButton(c, iconFileText, "保存响应…").Clicked() {
+					a.saveResponse(ts)
 				}
 				if iconButton(c, iconTrash, "清空响应").Clicked() {
 					ts.mu.Lock()
@@ -2018,6 +2207,24 @@ func (a *app) response(c *ui.Context, ts *tabState) {
 	})
 }
 
+// saveResponse writes the response body shown in the pane to a file.
+func (a *app) saveResponse(ts *tabState) {
+	ts.mu.Lock()
+	res := ts.result
+	text := ts.respBuf.String()
+	ts.mu.Unlock()
+	if res == nil || text == "" {
+		return
+	}
+	path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "保存响应"})
+	if err != nil || path == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		mygo.Dialog.Error("保存失败", err.Error())
+	}
+}
+
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<20:
@@ -2046,6 +2253,7 @@ func (a *app) modals(c *ui.Context) {
 	a.newEnvModal(c)
 	a.envInspectorModal(c)
 	a.collectionSettingsModal(c)
+	a.folderSettingsModal(c)
 }
 
 func (a *app) collectionSettingsModal(c *ui.Context) {
@@ -2063,17 +2271,14 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 			ui.Scroll(c).Height(340).Padding(6, 2).Children(func() {
 				switch a.collSettingsTab {
 				case 0:
-					a.dictTableCustom(c, &dot.Headers, "Collection Headers", "coll-hdr", func() {
-						a.coll.SaveCollectionBru()
-					}, nil)
+					a.dictTableCustom(c, &dot.Headers, "Collection Headers", "coll-hdr", a.saveCollection, nil)
 				case 1:
 					mode := orDefaultS(dot.Auth, "none")
-					collAuthKinds := []string{"none", "basic", "bearer", "apikey", "digest", "oauth2"}
 					ui.Row(c).Gap(8).Padding(0, 0, 8, 0).AlignItems(ui.Center).Children(func() {
 						ui.Text(c, "集合默认认证").Bold().FontSize(12)
-						if ui.Select(c.Key("coll-auth-mode"), &mode, collAuthKinds).Changed() {
+						if ui.Select(c.Key("coll-auth-mode"), &mode, collectionAuthKinds).Changed() {
 							dot.Auth = mode
-							a.coll.SaveCollectionBru()
+							a.saveCollection()
 						}
 					})
 					switch mode {
@@ -2091,9 +2296,7 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 						a.oauth2Fields(c, nil, "coll", &dot.AuthOAuth2, func() { a.coll.SaveCollectionBru() })
 					}
 				case 2:
-					a.dictTableCustom(c, &dot.Vars, "Collection Variables", "coll-vars", func() {
-						a.coll.SaveCollectionBru()
-					}, nil)
+					a.dictTableCustom(c, &dot.Vars, "Collection Variables", "coll-vars", a.saveCollection, nil)
 				case 3:
 					if a.collScriptPre != nil && a.collScriptPost != nil {
 						ui.Text(c, "Pre Request").Bold().FontSize(12)
@@ -2131,7 +2334,7 @@ func (a *app) collectionSettingsModal(c *ui.Context) {
 					if a.collDocsEd != nil {
 						dot.Docs = a.collDocsEd.Buffer.String()
 					}
-					a.coll.SaveCollectionBru()
+					a.saveCollection()
 					a.collSettingsOpen = false
 				}
 			})
@@ -2432,6 +2635,7 @@ func (a *app) envEditorModal(c *ui.Context) {
 			ui.Text(c, "环境变量（勾选启用；🔒 标记为 Secret 的值加密保存在本机，不写入 .bru 文件）").FontSize(12).TextColor(t.TextMuted)
 			ui.Scroll(c).MaxHeight(300).Children(func() {
 				ui.Column(c).Gap(6).Children(func() {
+					deleteAt := -1
 					for i := range a.envRows {
 						i := i
 						e := &a.envRows[i]
@@ -2458,10 +2662,13 @@ func (a *app) envEditorModal(c *ui.Context) {
 							delBtn := ui.Button(c.Key(rowKey+"-del"), "").Padding(4, 6).Label("删除变量")
 							delBtn.Children(func() { ui.Icon(c, iconTrash).Size(13, 13) })
 							if delBtn.Clicked() {
-								a.envRows = append(a.envRows[:i], a.envRows[i+1:]...)
-								a.revealSecret = map[int]bool{}
+								deleteAt = i
 							}
 						})
+					}
+					if deleteAt >= 0 && deleteAt < len(a.envRows) {
+						a.envRows = append(a.envRows[:deleteAt], a.envRows[deleteAt+1:]...)
+						a.revealSecret = map[int]bool{}
 					}
 				})
 			})
@@ -2500,13 +2707,6 @@ func parentOf(path string) string {
 		return ""
 	}
 	return path[:i]
-}
-
-// sortedCopy is unused but kept for future sorting needs.
-func sortedCopy(s []string) []string {
-	out := append([]string{}, s...)
-	sort.Strings(out)
-	return out
 }
 
 // testsPane lists script errors, test and assertion outcomes and the

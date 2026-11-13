@@ -6,8 +6,11 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"gruno/internal/script"
@@ -103,6 +106,39 @@ func (a *app) runnerView(c *ui.Context) {
 			})
 			ui.Text(c, "请求间隔 (ms)").FontSize(12).TextColor(t.TextMuted)
 			ui.TextInput(c.Key("runner-delay"), &rs.delayIn).Width(70).Placeholder("0")
+			dataBtn := ui.Button(c.Key("runner-data"), "").Gap(4).Padding(4, 8)
+			dataBtn.Children(func() {
+				ui.Icon(c, iconFileText).Size(13, 13)
+				label := "数据文件…"
+				if rs.dataPath != "" {
+					label = filepath.Base(rs.dataPath)
+				}
+				ui.Text(c, label).FontSize(11)
+			})
+			if dataBtn.Clicked() {
+				paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+					Title:   "选择运行数据文件",
+					Filters: []mygo.FileFilter{{Name: "CSV / JSON", Extensions: []string{"csv", "json"}}},
+				})
+				if err == nil && len(paths) > 0 {
+					rows, lerr := loadRunData(paths[0])
+					if lerr != nil {
+						rs.dataErr = lerr.Error()
+						rs.dataRows, rs.dataPath = nil, ""
+					} else {
+						rs.dataPath, rs.dataRows, rs.dataErr = paths[0], rows, ""
+					}
+				}
+			}
+			if rs.dataPath != "" {
+				if ui.Button(c.Key("runner-data-clear"), "清除数据").Padding(3, 8).Clicked() {
+					rs.dataPath, rs.dataRows, rs.dataErr = "", nil, ""
+				}
+				ui.Text(c, dataSummary(rs.dataRows)).FontSize(11).TextColor(t.TextMuted).NoWrap()
+			}
+			if rs.dataErr != "" {
+				ui.Text(c, rs.dataErr).FontSize(11).TextColor(t.Danger).MaxLines(1)
+			}
 			if running {
 				stop := ui.Button(c, "").Gap(6).Label("停止运行")
 				stop.Children(func() {
@@ -166,6 +202,14 @@ func (a *app) runnerView(c *ui.Context) {
 			if note != "" {
 				ui.Text(c, note).FontSize(11.5).TextColor(t.Warning).Grow(1).MinWidth(0).MaxLines(1)
 			}
+			if len(results) > 0 && ui.Button(c.Key("runner-report"), "导出报告…").Padding(3, 8).Clicked() {
+				path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{Title: "保存运行报告", DefaultPath: "gruno-report.xml"})
+				if err == nil && path != "" {
+					if werr := os.WriteFile(path, junitReport(rs.title, results), 0o644); werr != nil {
+						mygo.Dialog.Error("保存报告失败", werr.Error())
+					}
+				}
+			}
 		})
 		sectionTabs(c, "runner-filter", &rs.filter, []tabItem{
 			{Label: "全部", Count: len(results)},
@@ -216,7 +260,11 @@ func (a *app) runnerList(c *ui.Context, results []runResult) {
 						ui.Text(c, shortMethod(r.Method)).FontSize(10).Bold().TextColor(methodColor(t, r.Method)).NoWrap()
 					})
 					ui.Column(c).Gap(1).Grow(1).MinWidth(0).Children(func() {
-						ui.Text(c, r.Name).FontSize(12.5).MaxLines(1)
+						name := r.Name
+						if r.Iteration > 0 {
+							name = fmt.Sprintf("#%d %s", r.Iteration, name)
+						}
+						ui.Text(c, name).FontSize(12.5).MaxLines(1)
 						sub := r.Path
 						if r.Err != "" {
 							sub = r.Err

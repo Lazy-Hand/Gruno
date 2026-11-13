@@ -83,9 +83,12 @@ func (a *app) envSecretValues(env *bru.Environment) map[string]string {
 	}
 	v, err := a.secrets.Get(a.coll.Root, env.Name)
 	if err != nil {
+		// Not cached: the next call retries, so one keychain hiccup does
+		// not silently drop every secret for the session.
 		a.secretErr = err.Error()
-		v = map[string]string{}
+		return map[string]string{}
 	}
+	a.secretErr = ""
 	a.secretCache[env.Name] = v
 	return v
 }

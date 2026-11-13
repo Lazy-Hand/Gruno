@@ -66,9 +66,16 @@ func TestPrepareRequestVariableErrors(t *testing.T) {
 		t.Fatalf("missing var should name it: %v", err)
 	}
 
-	dyn := RequestData{Method: "GET", URL: "http://x/{{ $guid }}"}
-	if _, err := prepareRequest(context.Background(), inputFor(dyn, nil, nil)); err == nil || !strings.Contains(err.Error(), "动态变量") {
-		t.Fatalf("dynamic var should fail: %v", err)
+	// Dynamic variables resolve; an unknown $name does not.
+	dyn := RequestData{Method: "GET", URL: "http://x/{{$guid}}"}
+	if req, err := prepareRequest(context.Background(), inputFor(dyn, nil, nil)); err != nil {
+		t.Fatalf("dynamic var should resolve: %v", err)
+	} else if len(req.URL.Path) != 37 {
+		t.Fatalf("guid path: %q", req.URL.Path)
+	}
+	unknown := RequestData{Method: "GET", URL: "http://x/{{$nope}}"}
+	if _, err := prepareRequest(context.Background(), inputFor(unknown, nil, nil)); err == nil || !strings.Contains(err.Error(), "动态变量") {
+		t.Fatalf("unknown dynamic var should fail: %v", err)
 	}
 
 	// Cycle: a -> b -> a
@@ -296,7 +303,7 @@ func TestPrepareRequestURLEncodedInURLVar(t *testing.T) {
 func TestSplitURLQueryHelper(t *testing.T) {
 	// url.Parse keeps RawQuery; ensure our append preserves it once.
 	u, _ := url.Parse("http://h/p?x=1")
-	appendRawQuery(u, []Pair{pair("y", "2")})
+	appendRawQuery(u, []Pair{pair("y", "2")}, true)
 	if u.RawQuery != "x=1&y=2" {
 		t.Fatalf("rawquery: %s", u.RawQuery)
 	}

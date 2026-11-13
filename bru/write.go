@@ -2,7 +2,6 @@ package bru
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -13,36 +12,45 @@ import (
 func SerializeRequest(r *Request) string {
 	var b strings.Builder
 
-	writeDict(&b, "meta", Dict{
-		{Key: "name", Value: r.Meta.Name, Enabled: true},
-		{Key: "type", Value: orDefault(r.Meta.Type, "http"), Enabled: true},
-		{Key: "seq", Value: strconv.Itoa(r.Meta.Seq), Enabled: true},
-	})
+	writeMeta(&b, r.Meta)
 
-	method := strings.ToLower(orDefault(r.Method, "get"))
-	writeDict(&b, method, Dict{
-		{Key: "url", Value: r.URL, Enabled: true},
-		{Key: "body", Value: orDefault(r.Body, "none"), Enabled: true},
-		{Key: "auth", Value: orDefault(r.Auth, "none"), Enabled: true},
-	})
+	if r.IsWebSocket() {
+		writeDict(&b, "ws", Dict{{Key: "url", Value: r.URL, Enabled: true}})
+		writeWSMessages(&b, r.WSMessages)
+		// Headers and auth blocks are valid on a ws request too; keep
+		// what was parsed instead of dropping it on save.
+		writeDict(&b, "headers", r.Headers)
+		writeDict(&b, "auth:basic", r.AuthBasic)
+		writeDict(&b, "auth:bearer", r.AuthBearer)
+		writeDict(&b, "auth:apikey", r.AuthAPIKey)
+		writeDict(&b, "auth:oauth2", r.AuthOAuth2)
+		writeDict(&b, "auth:digest", r.AuthDigest)
+	} else {
+		method := strings.ToLower(orDefault(r.Method, "get"))
+		writeDict(&b, method, Dict{
+			{Key: "url", Value: r.URL, Enabled: true},
+			{Key: "body", Value: orDefault(r.Body, "none"), Enabled: true},
+			{Key: "auth", Value: orDefault(r.Auth, "none"), Enabled: true},
+		})
 
-	writeDict(&b, "headers", r.Headers)
-	writeDict(&b, "params:query", r.ParamsQuery)
-	writeDict(&b, "params:path", r.ParamsPath)
+		writeDict(&b, "headers", r.Headers)
+		writeDict(&b, "params:query", r.ParamsQuery)
+		writeDict(&b, "params:path", r.ParamsPath)
 
-	writeText(&b, "body:json", r.BodyJSON)
-	writeText(&b, "body:text", r.BodyText)
-	writeText(&b, "body:xml", r.BodyXML)
-	writeDict(&b, "body:form-urlencoded", r.BodyFormURLEnc)
-	writeDict(&b, "body:multipart-form", r.BodyMultipart)
-	writeText(&b, "body:graphql", r.BodyGraphQL)
-	writeText(&b, "body:graphql:vars", r.BodyGraphQLVars)
+		writeText(&b, "body:json", r.BodyJSON)
+		writeText(&b, "body:text", r.BodyText)
+		writeText(&b, "body:xml", r.BodyXML)
+		writeDict(&b, "body:form-urlencoded", r.BodyFormURLEnc)
+		writeDict(&b, "body:multipart-form", r.BodyMultipart)
+		writeText(&b, "body:graphql", r.BodyGraphQL)
+		writeText(&b, "body:graphql:vars", r.BodyGraphQLVars)
 
-	writeDict(&b, "auth:basic", r.AuthBasic)
-	writeDict(&b, "auth:bearer", r.AuthBearer)
-	writeDict(&b, "auth:apikey", r.AuthAPIKey)
-	writeDict(&b, "auth:oauth2", r.AuthOAuth2)
-	writeDict(&b, "auth:digest", r.AuthDigest)
+		writeDict(&b, "auth:basic", r.AuthBasic)
+		writeDict(&b, "auth:bearer", r.AuthBearer)
+		writeDict(&b, "auth:apikey", r.AuthAPIKey)
+		writeDict(&b, "auth:oauth2", r.AuthOAuth2)
+		writeDict(&b, "auth:digest", r.AuthDigest)
+	}
 
 	writeDict(&b, "vars:pre-request", r.VarsPreRequest)
 	writeDict(&b, "vars:post-response", r.VarsPostResponse)
@@ -55,6 +63,55 @@ func SerializeRequest(r *Request) string {
 	writeRaw(&b, r.Extra)
 
 	return b.String()
+}
+
+// writeMeta writes the meta block, including the tags array Bruno uses
+// to group requests for filtered runs.
+func writeMeta(b *strings.Builder, m Meta) {
+	b.WriteString("meta {\n")
+	writeMetaKV(b, "name", m.Name)
+	writeMetaKV(b, "type", orDefault(m.Type, "http"))
+	writeMetaKV(b, "seq", strconv.Itoa(m.Seq))
+	if len(m.Tags) > 0 {
+		b.WriteString("  tags: [\n")
+		for _, t := range m.Tags {
+			b.WriteString("    " + t + "\n")
+		}
+		b.WriteString("  ]\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+func writeMetaKV(b *strings.Builder, key, value string) {
+	if value == "" {
+		b.WriteString("  " + key + "\n")
+		return
+	}
+	fmt.Fprintf(b, "  %s: %s\n", key, value)
+}
+
+// writeWSMessages writes the saved WebSocket messages as body:ws nested
+// blocks, in Bruno's exact shape.
+func writeWSMessages(b *strings.Builder, msgs []WSMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	b.WriteString("body:ws {\n")
+	for i, m := range msgs {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(b, "  %s [%s] {\n", orDefault(m.Name, "message"), orDefault(m.Kind, "text"))
+		for _, line := range strings.Split(m.Body, "\n") {
+			if line == "" {
+				b.WriteString("\n")
+			} else {
+				b.WriteString("    " + line + "\n")
+			}
+		}
+		b.WriteString("  }\n")
+	}
+	b.WriteString("}\n\n")
 }
 
 // SerializeEnvironment renders an Environment: vars then vars:secret.
@@ -144,8 +201,10 @@ func writeText(b *strings.Builder, tag string, text string) {
 	}
 	fmt.Fprintf(b, "%s {\n", tag)
 	for _, line := range strings.Split(text, "\n") {
-		b.WriteString("  ")
-		b.WriteString(line)
+		if line != "" {
+			b.WriteString("  ")
+			b.WriteString(line)
+		}
 		b.WriteString("\n")
 	}
 	b.WriteString("}\n\n")
@@ -180,15 +239,4 @@ func VarsMap(dicts ...Dict) map[string]string {
 		}
 	}
 	return m
-}
-
-// SortBySeq orders names by the seq in each file's meta; entries with
-// equal or zero seq sort by name.
-func SortBySeq(files []*Request, nameOf func(*Request) string) {
-	sort.SliceStable(files, func(i, j int) bool {
-		if files[i].Meta.Seq != files[j].Meta.Seq {
-			return files[i].Meta.Seq < files[j].Meta.Seq
-		}
-		return nameOf(files[i]) < nameOf(files[j])
-	})
 }

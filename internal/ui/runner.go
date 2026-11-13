@@ -15,9 +15,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 
+	"gruno/bru"
 	"gruno/internal/script"
 	"gruno/internal/send"
 )
@@ -56,17 +58,19 @@ const (
 // runResult is one executed request of a run.
 type runResult struct {
 	Path, Name, Method string
-	URL                string
-	Outcome            runOutcome
-	Status             int
-	StatusText         string
-	DurationMs         float64
-	Size               int64
-	Headers            []send.Pair
-	Body               string
-	BodyCut            bool
-	Err                string
-	Script             script.Result
+	// Iteration is the data row's 1-based pass, 0 without a data file.
+	Iteration  int
+	URL        string
+	Outcome    runOutcome
+	Status     int
+	StatusText string
+	DurationMs float64
+	Size       int64
+	Headers    []send.Pair
+	Body       string
+	BodyCut    bool
+	Err        string
+	Script     script.Result
 }
 
 // passedTests counts passing and all tests plus asserts.
@@ -100,15 +104,32 @@ type runnerState struct {
 	startedAt time.Time
 	elapsed   time.Duration
 	note      string
+
+	// dataPath/dataRows back the optional CSV/JSON table; each row is
+	// one full pass over the requests, its columns as variables.
+	dataPath string
+	dataRows []map[string]string
+	dataErr  string
+
+	// version moves with results; the view copies them only when it
+	// changed, so a big run does not copy the list every frame.
+	version   uint64
+	snap      []runResult
+	snapAtVer uint64
 	// pending carries the run's variable changes to the UI thread.
 	pending *script.Vars
 }
 
-// snapshot copies what the view shows.
+// snapshot copies what the view shows, reusing the last copy while the
+// results did not change.
 func (rs *runnerState) snapshot() (results []runResult, running bool, planned int, elapsed time.Duration, note string) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	results = append([]runResult(nil), rs.results...)
+	if rs.snapAtVer != rs.version {
+		rs.snap = append([]runResult(nil), rs.results...)
+		rs.snapAtVer = rs.version
+	}
+	results = rs.snap
 	elapsed = rs.elapsed
 	if rs.running {
 		elapsed = time.Since(rs.startedAt)
@@ -123,6 +144,7 @@ func (rs *runnerState) put(i int, r runResult) {
 	} else {
 		rs.results[i] = r
 	}
+	rs.version++
 	rs.mu.Unlock()
 }
 
@@ -130,13 +152,18 @@ func (rs *runnerState) put(i int, r runResult) {
 // sidebar shows them: subfolders first, depth first, then the folder's
 // own requests by seq.
 func (a *app) runOrder(folder string) []*BruRequest {
+	idx := a.newTreeIndex()
 	var out []*BruRequest
 	var walk func(string)
 	walk = func(f string) {
-		for _, sub := range a.folderChildren(f) {
+		for _, sub := range idx.folders[f] {
 			walk(sub.Path)
 		}
-		out = append(out, a.requestsIn(f)...)
+		for _, br := range idx.requests[f] {
+			if !br.Req.IsWebSocket() && !isSSERequest(br.Req) {
+				out = append(out, br)
+			}
+		}
 	}
 	walk(folder)
 	return out
@@ -229,6 +256,7 @@ func (a *app) startRun() {
 	rs.cancel = cancel
 	rs.planned = len(steps)
 	rs.results = nil
+	rs.version++
 	rs.note = ""
 	rs.pending = nil
 	rs.startedAt = time.Now()
@@ -238,8 +266,9 @@ func (a *app) startRun() {
 	svc, services := a.svc, a.services
 	runtime := append([]script.RuntimeVar(nil), a.runtimeVars...)
 	envName := a.coll.ActiveEnv
+	rows := append([]map[string]string(nil), rs.dataRows...)
 	go func() {
-		vars, note := executeRun(ctx, svc, steps, runtime, envName, time.Duration(max(delayMs, 0))*time.Millisecond, rs, services.Invalidate)
+		vars, note := executeRun(ctx, svc, steps, runtime, envName, rows, time.Duration(max(delayMs, 0))*time.Millisecond, rs, services.Invalidate)
 		rs.mu.Lock()
 		rs.running = false
 		rs.cancel = nil
@@ -291,7 +320,7 @@ func (a *app) applyRunVars() {
 // calls, and records each result in rs. It returns the run's variable
 // changes (runtime variables and every bru.setEnvVar, in order) and a
 // note on why it ended early, if it did.
-func executeRun(ctx context.Context, svc *send.HTTPService, steps []runStep, runtime []script.RuntimeVar, envName string, delay time.Duration, rs *runnerState, invalidate func()) (*script.Vars, string) {
+func executeRun(ctx context.Context, svc *send.HTTPService, steps []runStep, runtime []script.RuntimeVar, envName string, rows []map[string]string, delay time.Duration, rs *runnerState, invalidate func()) (*script.Vars, string) {
 	out := &script.Vars{EnvName: envName, Runtime: runtime}
 	if len(steps) == 0 {
 		return out, ""
@@ -304,61 +333,99 @@ func executeRun(ctx context.Context, svc *send.HTTPService, steps []runStep, run
 	}
 	env := append([]send.Pair(nil), steps[0].vars.Env...)
 	note := ""
-	for i, n := 0, 0; i < len(steps); n++ {
-		if ctx.Err() != nil {
-			note = "运行已停止"
-			break
+	hasData := len(rows) > 0
+	if !hasData {
+		rows = []map[string]string{nil}
+	}
+	n, iteration := 0, 0
+outer:
+	for _, row := range rows {
+		if hasData {
+			iteration++
 		}
-		if n >= maxRunSteps {
-			note = fmt.Sprintf("已执行 %d 次请求，可能是 setNextRequest 造成了循环，运行已结束", maxRunSteps)
-			break
-		}
-		st := steps[i]
-		res := runResult{Path: st.path, Name: st.name, Method: st.method, Outcome: runRunning}
-		rs.put(n, res)
-		invalidate()
-
-		vars := st.vars
-		vars.Runtime = out.Runtime
-		vars.Env = env
-		vars.EnvSets = nil
-		ctl := &script.RunControl{}
-		sess := script.NewSession(&vars)
-		sess.Run = ctl
-		runOne(ctx, svc, st, &vars, sess, &res)
-		res.Script = sess.Result
-		out.Runtime = vars.Runtime
-		env = vars.Env
-		out.EnvSets = append(out.EnvSets, vars.EnvSets...)
-		rs.put(n, res)
-		invalidate()
-
-		if ctl.Stop {
-			note = "bru.runner.stopExecution() 结束了运行"
-			break
-		}
-		next := i + 1
-		if ctl.NextSet {
-			if ctl.NextNull {
-				note = "bru.setNextRequest(null) 结束了运行"
-				break
+		for i := 0; i < len(steps); {
+			if ctx.Err() != nil {
+				note = "运行已停止"
+				break outer
 			}
-			j, ok := byName[ctl.Next]
-			if !ok {
-				note = fmt.Sprintf("找不到 setNextRequest 指定的请求 %q，运行已结束", ctl.Next)
-				break
+			if n >= maxRunSteps {
+				note = fmt.Sprintf("已执行 %d 次请求，可能是 setNextRequest 造成了循环，运行已结束", maxRunSteps)
+				break outer
 			}
-			next = j
-		}
-		i = next
-		if delay > 0 && i < len(steps) {
-			select {
-			case <-ctx.Done():
-			case <-time.After(delay):
+			n++
+			st := steps[i]
+			res := runResult{Path: st.path, Name: st.name, Method: st.method, Iteration: iteration, Outcome: runRunning}
+			rs.put(n-1, res)
+			invalidate()
+
+			vars := st.vars
+			vars.Runtime = out.Runtime
+			vars.Env = env
+			vars.EnvSets = nil
+			vars.Data = dataPairs(row)
+			ctl := &script.RunControl{}
+			sess := script.NewSession(&vars)
+			sess.Run = ctl
+			sess.Ctx = ctx
+			runOne(ctx, svc, st, &vars, sess, &res)
+			res.Script = sess.Result
+			out.Runtime = vars.Runtime
+			env = vars.Env
+			out.EnvSets = append(out.EnvSets, vars.EnvSets...)
+			rs.put(n-1, res)
+			invalidate()
+
+			if ctl.Stop {
+				note = "bru.runner.stopExecution() 结束了运行"
+				break outer
+			}
+			next := i + 1
+			if ctl.NextSet {
+				if ctl.NextNull {
+					note = "bru.setNextRequest(null) 结束了运行"
+					break outer
+				}
+				j, ok := byName[ctl.Next]
+				if !ok {
+					note = fmt.Sprintf("找不到 setNextRequest 指定的请求 %q，运行已结束", ctl.Next)
+					break outer
+				}
+				next = j
+			}
+			i = next
+			if delay > 0 && i < len(steps) {
+				select {
+				case <-ctx.Done():
+					note = "运行已停止"
+					break outer
+				case <-time.After(delay):
+				}
 			}
 		}
 	}
 	return out, note
+}
+
+// cutUTF8 truncates s to at most n bytes without splitting a rune.
+func cutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+// isSSERequest reports a request whose Accept header asks for an event
+// stream: runs skip it (a live stream would never finish).
+func isSSERequest(r *bru.Request) bool {
+	for _, e := range r.Headers {
+		if e.Enabled && strings.EqualFold(e.Key, "Accept") && strings.Contains(strings.ToLower(e.Value), "text/event-stream") {
+			return true
+		}
+	}
+	return false
 }
 
 // runOne sends one step and runs its scripts into res.
@@ -398,7 +465,7 @@ func runOne(ctx context.Context, svc *send.HTTPService, st runStep, vars *script
 	}
 	res.Body = respDisplayText(&result)
 	if len(res.Body) > runBodyLimit {
-		res.Body, res.BodyCut = res.Body[:runBodyLimit], true
+		res.Body, res.BodyCut = cutUTF8(res.Body, runBodyLimit), true
 	}
 	sess.PostResponse(input.Request, script.Response{
 		Status: head.StatusCode, StatusText: head.StatusText, URL: head.URL,

@@ -4,9 +4,9 @@ package ui
 // tree selection, tab behavior and the request editor's sections.
 
 import (
-	"os"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"

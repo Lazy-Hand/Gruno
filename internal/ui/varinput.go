@@ -21,6 +21,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 
 	"gruno/bru"
+	"gruno/internal/send"
 )
 
 // varEntry is a variable a field can refer to, from the scopes a send
@@ -31,8 +32,25 @@ type varEntry struct {
 }
 
 // varEntries lists the variables visible to br, highest precedence
-// last, as the resolver reads them.
+// last, as the resolver reads them. The result is cached for the build
+// pass: a table of inputs asks once, not once per row.
 func (a *app) varEntries(br *BruRequest) []varEntry {
+	key := ""
+	if br != nil {
+		key = br.Path
+	}
+	if v, ok := a.varPass[key]; ok {
+		return v
+	}
+	v := a.collectVarEntries(br)
+	if a.varPass == nil {
+		a.varPass = map[string][]varEntry{}
+	}
+	a.varPass[key] = v
+	return v
+}
+
+func (a *app) collectVarEntries(br *BruRequest) []varEntry {
 	var out []varEntry
 	add := func(scope string, d bru.Dict) {
 		for _, e := range d {
@@ -62,18 +80,26 @@ func (a *app) varEntries(br *BruRequest) []varEntry {
 		add("请求", br.Req.VarsPreRequest)
 	}
 	add("运行时", a.runtimeDict())
+	for _, name := range send.DynamicNames {
+		if val, ok := send.DynamicVar(name); ok {
+			out = append(out, varEntry{Name: name, Value: val, Scope: "动态"})
+		}
+	}
 	return out
 }
 
-// lookupVar finds the entry that wins for name.
-func lookupVar(vars []varEntry, name string) (varEntry, bool) {
+// lookupVar finds the entry that wins for name. process.env names are
+// defined only when the variable exists; an unknown one shows red.
+func (a *app) lookupVar(vars []varEntry, name string) (varEntry, bool) {
 	for i := len(vars) - 1; i >= 0; i-- {
 		if vars[i].Name == name {
 			return vars[i], true
 		}
 	}
-	if strings.HasPrefix(name, "process.env.") {
-		return varEntry{Name: name, Scope: "process.env"}, true
+	if key, ok := strings.CutPrefix(name, "process.env."); ok && a.coll != nil {
+		if val, found := a.coll.loadDotEnv()[key]; found {
+			return varEntry{Name: name, Value: val, Scope: "process.env"}, true
+		}
 	}
 	return varEntry{}, false
 }
@@ -245,7 +271,7 @@ func (a *app) varInput(c *ui.Context, key string, br *BruRequest, v *string, o v
 
 	// At rest with variables: chips.
 	if !st.editing && !o.Password && len(tokens) > 0 {
-		field := sizeOf(ui.Row(c.Key(key + "-chips"))).Gap(2).AlignItems(ui.Center).
+		field := sizeOf(ui.Row(c.Key(key+"-chips"))).Gap(2).AlignItems(ui.Center).
 			Padding(4, 8).MinHeight(30).Radius(6).BorderWidth(1).BorderColor(t.Border).
 			Background(t.Surface).Clip()
 		field.Children(func() {
@@ -290,7 +316,7 @@ func (a *app) varInput(c *ui.Context, key string, br *BruRequest, v *string, o v
 	if !o.Password {
 		for _, tok := range tokens {
 			col := t.Accent
-			if _, ok := lookupVar(vars, tok.Name); !ok {
+			if _, ok := a.lookupVar(vars, tok.Name); !ok {
 				col = t.Danger
 			}
 			inp.TextRanges(ui.TextRange{Start: tok.Start, End: tok.End, Color: col, Weight: 600})
@@ -396,7 +422,7 @@ func (a *app) varInput(c *ui.Context, key string, br *BruRequest, v *string, o v
 // menu swaps the variable or starts editing.
 func (a *app) varChip(c *ui.Context, key string, i int, br *BruRequest, vars []varEntry, tok varToken, v *string, changed *bool) {
 	t := c.Theme()
-	entry, ok := lookupVar(vars, tok.Name)
+	entry, ok := a.lookupVar(vars, tok.Name)
 	col := t.Accent
 	tip := "未定义的变量"
 	if ok {
@@ -461,7 +487,9 @@ func (a *app) attachVarCompletion(st *editor.State, br *BruRequest) {
 		}
 		closed := req.Offset+2 <= n && st.Buffer.Slice(req.Offset, req.Offset+2) == "}}"
 		var items []editor.Completion
-		for _, v := range uniqueVars(a.varEntries(br)) {
+		// Completions run outside the build pass: read the variables
+		// fresh, never from the pass cache.
+		for _, v := range uniqueVars(a.collectVarEntries(br)) {
 			insert := v.Name
 			if !closed {
 				insert += "}}"

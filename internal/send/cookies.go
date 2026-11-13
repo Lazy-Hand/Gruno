@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/net/publicsuffix"
@@ -20,13 +21,16 @@ type CookieJar struct {
 	mu      sync.Mutex
 	jar     *cookiejar.Jar
 	origins map[string]*url.URL // scheme://host that set cookies
+	// paths records, per host, the cookie paths in use, so Delete can
+	// expire a cookie set on a path other than "/".
+	paths map[string]map[string]bool
 }
 
 // NewCookieJar returns an empty jar with public-suffix rules, so a site
 // cannot set cookies for a whole TLD.
 func NewCookieJar() *CookieJar {
 	j, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-	return &CookieJar{jar: j, origins: map[string]*url.URL{}}
+	return &CookieJar{jar: j, origins: map[string]*url.URL{}, paths: map[string]map[string]bool{}}
 }
 
 func (c *CookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
@@ -35,6 +39,20 @@ func (c *CookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	c.jar.SetCookies(u, cookies)
 	o := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/"}
 	c.origins[o.String()] = o
+	host := strings.ToLower(u.Host)
+	if c.paths[host] == nil {
+		c.paths[host] = map[string]bool{}
+	}
+	for _, ck := range cookies {
+		if ck.MaxAge < 0 {
+			continue // an expiry, not a new path
+		}
+		path := ck.Path
+		if path == "" {
+			path = "/"
+		}
+		c.paths[host][path] = true
+	}
 }
 
 func (c *CookieJar) Cookies(u *url.URL) []*http.Cookie {
@@ -81,12 +99,20 @@ func (c *CookieJar) List() []StoredCookie {
 func (c *CookieJar) Delete(host, name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	key := strings.ToLower(host)
+	paths := c.paths[key]
+	if len(paths) == 0 {
+		paths = map[string]bool{"/": true}
+	}
 	for _, o := range c.origins {
-		if o.Host != host {
+		if !strings.EqualFold(o.Host, host) {
 			continue
 		}
-		c.jar.SetCookies(o, []*http.Cookie{{Name: name, Path: "/", MaxAge: -1}})
+		for path := range paths {
+			c.jar.SetCookies(o, []*http.Cookie{{Name: name, Path: path, MaxAge: -1}})
+		}
 	}
+	delete(c.paths, key)
 }
 
 // Clear forgets every cookie.
@@ -95,4 +121,5 @@ func (c *CookieJar) Clear() {
 	defer c.mu.Unlock()
 	c.jar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	c.origins = map[string]*url.URL{}
+	c.paths = map[string]map[string]bool{}
 }

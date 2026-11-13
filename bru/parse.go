@@ -109,9 +109,89 @@ func parseText(lines []string) string {
 	return strings.Join(u, "\n")
 }
 
+// parseMeta reads a meta block, including the tags array.
+func parseMeta(lines []string) Meta {
+	var m Meta
+	inTags := false
+	for _, l := range unindent(lines) {
+		t := strings.TrimSpace(l)
+		if inTags {
+			if t == "]" {
+				inTags = false
+				continue
+			}
+			if t != "" {
+				m.Tags = append(m.Tags, t)
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "tags:") && strings.HasSuffix(t, "[") {
+			inTags = true
+			continue
+		}
+		k, v, _ := strings.Cut(t, ":")
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch k {
+		case "name":
+			m.Name = v
+		case "type":
+			m.Type = v
+		case "seq":
+			if n, err := strconv.Atoi(v); err == nil {
+				m.Seq = n
+			}
+		}
+	}
+	return m
+}
+
+// parseWSMessages reads the nested message blocks of body:ws. Each is
+// "name [kind] {" at the block's indentation, its body indented one
+// level deeper, and a closing brace.
+func parseWSMessages(lines []string) []WSMessage {
+	var out []WSMessage
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+		t := strings.TrimSpace(raw)
+		if t == "" || !strings.HasSuffix(t, "{") {
+			continue
+		}
+		indent := len(raw) - len(strings.TrimLeft(raw, " "))
+		header := strings.TrimSpace(strings.TrimSuffix(t, "{"))
+		name, kind := header, "text"
+		if j := strings.LastIndex(header, "["); j >= 0 && strings.HasSuffix(header, "]") {
+			kind = strings.TrimSpace(header[j+1 : len(header)-1])
+			name = strings.TrimSpace(header[:j])
+		}
+		var body []string
+		j := i + 1
+		for ; j < len(lines); j++ {
+			line := lines[j]
+			// Only a brace at the message's own indentation closes it; a
+			// pretty-printed body may contain braces one level deeper.
+			if strings.TrimSpace(line) == "}" && (len(line)-len(strings.TrimLeft(line, " "))) <= indent {
+				break
+			}
+			if pad := indent + 2; len(line) >= pad && strings.TrimSpace(line[:pad]) == "" {
+				line = line[pad:]
+			}
+			body = append(body, line)
+		}
+		for len(body) > 0 && strings.TrimSpace(body[0]) == "" {
+			body = body[1:]
+		}
+		for len(body) > 0 && strings.TrimSpace(body[len(body)-1]) == "" {
+			body = body[:len(body)-1]
+		}
+		out = append(out, WSMessage{Name: name, Kind: kind, Body: strings.Join(body, "\n")})
+		i = j
+	}
+	return out
+}
+
 var methodTags = map[string]bool{
 	"get": true, "post": true, "put": true, "delete": true,
-	"patch": true, "options": true, "head": true,
+	"patch": true, "options": true, "head": true, "trace": true, "connect": true,
 }
 
 // ParseRequest decodes one request .bru file.
@@ -124,21 +204,21 @@ func ParseRequest(src string) (*Request, error) {
 	for _, b := range blocks {
 		switch b.tag {
 		case "meta":
+			r.Meta = parseMeta(b.lines)
+		case "ws":
 			for _, e := range parseDict(b.lines) {
-				switch e.Key {
-				case "name":
-					r.Meta.Name = e.Value
-				case "type":
-					r.Meta.Type = e.Value
-				case "seq":
-					if n, err := strconv.Atoi(e.Value); err == nil {
-						r.Meta.Seq = n
-					}
+				if e.Key == "url" {
+					r.URL = e.Value
 				}
 			}
+		case "body:ws":
+			r.WSMessages = parseWSMessages(b.lines)
+		case "body":
+			// Bruno's canonical JSON body block (body { ... }).
+			r.BodyJSON = parseText(b.lines)
 		case "headers":
 			r.Headers = parseDict(b.lines)
-		case "params:query", "query":
+		case "params", "params:query", "query":
 			r.ParamsQuery = parseDict(b.lines)
 		case "params:path":
 			r.ParamsPath = parseDict(b.lines)
@@ -166,7 +246,9 @@ func ParseRequest(src string) (*Request, error) {
 			r.AuthOAuth2 = parseDict(b.lines)
 		case "auth:digest":
 			r.AuthDigest = parseDict(b.lines)
-		case "vars:pre-request":
+		case "vars", "vars:pre-request":
+			// "vars" is the older request-variable block; keep it as the
+			// pre-request scope so values survive a save.
 			r.VarsPreRequest = parseDict(b.lines)
 		case "vars:post-response":
 			r.VarsPostResponse = parseDict(b.lines)
@@ -254,18 +336,7 @@ func ParseCollection(src string) (*CollectionBru, error) {
 		case "auth:oauth2":
 			cb.AuthOAuth2 = parseDict(b.lines)
 		case "meta":
-			for _, e := range parseDict(b.lines) {
-				switch e.Key {
-				case "name":
-					cb.Meta.Name = e.Value
-				case "type":
-					cb.Meta.Type = e.Value
-				case "seq":
-					if n, err := strconv.Atoi(e.Value); err == nil {
-						cb.Meta.Seq = n
-					}
-				}
-			}
+			cb.Meta = parseMeta(b.lines)
 		case "auth:digest":
 			cb.AuthDigest = parseDict(b.lines)
 		case "script:pre-request":

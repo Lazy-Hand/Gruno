@@ -6,6 +6,8 @@ package ui
 //   - request (.bru settings block): timeout, redirects.
 
 import (
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -63,6 +65,9 @@ func (a *app) sendSettings(br *BruRequest) send.Settings {
 			st.MaxRedirects = n
 		}
 	}
+	if v, ok := reqSetting(br.Req, "encodeUrl"); ok && v == "false" {
+		st.NoEncodeURL = true
+	}
 	return st
 }
 
@@ -89,6 +94,14 @@ func (a *app) requestSettingsSection(c *ui.Context, br *BruRequest) {
 		}
 		if ui.Checkbox(c.Key(br.Path+"-set-follow"), &follow, "跟随重定向").Changed() {
 			dictSet(&r.Settings, "followRedirects", strconv.FormatBool(follow))
+			a.save(br)
+		}
+		encode := true
+		if v, ok := reqSetting(r, "encodeUrl"); ok && v == "false" {
+			encode = false
+		}
+		if ui.Checkbox(c.Key(br.Path+"-set-encode"), &encode, "对 URL 查询参数做编码").Changed() {
+			dictSet(&r.Settings, "encodeUrl", strconv.FormatBool(encode))
 			a.save(br)
 		}
 		if follow {
@@ -209,6 +222,7 @@ func (a *app) collectionCertsTab(c *ui.Context) {
 			save()
 		}
 		ui.Text(c, "按域名匹配，例如 api.example.com、*.example.com 或 host:8443").FontSize(11).TextColor(t.TextMuted)
+		deleteAt := -1
 		for i := range a.coll.ClientCerts {
 			i := i
 			cc := &a.coll.ClientCerts[i]
@@ -238,9 +252,7 @@ func (a *app) collectionCertsTab(c *ui.Context) {
 					del := ui.Button(c.Key(key+"-del"), "").Padding(4, 6).Label("删除证书")
 					del.Children(func() { ui.Icon(c, iconTrash).Size(13, 13) })
 					if del.Clicked() {
-						a.coll.ClientCerts = append(a.coll.ClientCerts[:i], a.coll.ClientCerts[i+1:]...)
-						a.certPFX = nil
-						save()
+						deleteAt = i
 					}
 				})
 				if cc.PFXFile != "" || a.certPFX[i] {
@@ -256,6 +268,11 @@ func (a *app) collectionCertsTab(c *ui.Context) {
 					}
 				})
 			})
+		}
+		if deleteAt >= 0 && deleteAt < len(a.coll.ClientCerts) {
+			a.coll.ClientCerts = append(a.coll.ClientCerts[:deleteAt], a.coll.ClientCerts[deleteAt+1:]...)
+			a.certPFX = nil
+			save()
 		}
 		add := ui.Button(c.Key("coll-cert-add"), "").Gap(4)
 		add.Children(func() {
@@ -360,6 +377,23 @@ func (a *app) cookiesModal(c *ui.Context) {
 				ui.Text(c, "还没有保存的 Cookie。响应中的 Set-Cookie 会自动保存在这里，直到退出 Gruno。").
 					FontSize(12).TextColor(t.TextMuted).Padding(12, 0)
 			}
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c.Key("cookie-host"), &a.cookieHost).Width(160).Placeholder("主机，如 api.example.com")
+				ui.TextInput(c.Key("cookie-name"), &a.cookieName).Width(130).Placeholder("名称")
+				ui.TextInput(c.Key("cookie-value"), &a.cookieValue).Grow(1).Placeholder("值")
+				add := ui.Button(c.Key("cookie-add"), "添加").Padding(3, 10)
+				if add.Clicked() {
+					host := strings.TrimSpace(a.cookieHost)
+					host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+					host = strings.TrimSuffix(host, "/")
+					name := strings.TrimSpace(a.cookieName)
+					if host != "" && name != "" {
+						jar.SetCookies(&url.URL{Scheme: "https", Host: host, Path: "/"},
+							[]*http.Cookie{{Name: name, Value: a.cookieValue, Path: "/"}})
+						a.cookieHost, a.cookieName, a.cookieValue = "", "", ""
+					}
+				}
+			})
 			ui.Scroll(c).MaxHeight(360).Children(func() {
 				ui.Column(c).Gap(2).Children(func() {
 					host := ""

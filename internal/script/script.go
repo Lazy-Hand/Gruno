@@ -9,6 +9,7 @@
 package script
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -58,14 +59,20 @@ type EnvSet struct {
 // Vars are the variable scopes of one send, lowest precedence first in
 // Scopes(). Env and Runtime are copies the scripts change.
 type Vars struct {
-	ProcessEnv     map[string]string // collection .env, then the OS environment
-	Collection     []send.Pair
-	Folder         []send.Pair // folder.bru vars, outermost first
-	Env            []send.Pair
-	Request        []send.Pair
+	ProcessEnv map[string]string // collection .env, then the OS environment
+	Collection []send.Pair
+	Folder     []send.Pair // folder.bru vars, outermost first
+	Env        []send.Pair
+	Request    []send.Pair
+	// Data is the current runner data-file row, highest precedence.
+	Data           []send.Pair
 	Runtime        []RuntimeVar
 	EnvName        string
 	CollectionName string
+
+	// penv caches the process.env scope pairs; ProcessEnv never changes
+	// during a session.
+	penv []send.Pair
 
 	// EnvSets lists every bru.setEnvVar of the session, in call order.
 	EnvSets []EnvSet
@@ -74,15 +81,18 @@ type Vars struct {
 // Scopes returns the resolution scopes for a send: process.env,
 // collection, folders, environment, request, runtime.
 func (v *Vars) Scopes() [][]send.Pair {
-	penv := make([]send.Pair, 0, len(v.ProcessEnv))
-	for k, val := range v.ProcessEnv {
-		penv = append(penv, send.Pair{Key: "process.env." + k, Value: val, Enabled: true})
+	if v.penv == nil {
+		v.penv = make([]send.Pair, 0, len(v.ProcessEnv))
+		for k, val := range v.ProcessEnv {
+			v.penv = append(v.penv, send.Pair{Key: "process.env." + k, Value: val, Enabled: true})
+		}
 	}
+	penv := v.penv
 	rt := make([]send.Pair, 0, len(v.Runtime))
 	for _, r := range v.Runtime {
 		rt = append(rt, send.Pair{Key: r.Key, Value: r.Value, Enabled: true})
 	}
-	return [][]send.Pair{penv, v.Collection, v.Folder, v.Env, v.Request, rt}
+	return [][]send.Pair{penv, v.Collection, v.Folder, v.Env, v.Request, rt, v.Data}
 }
 
 func (v *Vars) runtimeIndex(key string) int {
@@ -193,6 +203,9 @@ type Session struct {
 	// Run is set when the session belongs to a collection run; without
 	// it the runner-only calls warn and do nothing.
 	Run *RunControl
+
+	// Ctx cancels a script's sleep when the send or run is stopped.
+	Ctx context.Context
 
 	phase string // current phase, for console log entries
 }
@@ -311,11 +324,11 @@ func (s *Session) newVM(phase string, req *send.RequestData, res *Response) (*go
 	if err := vm.Set("__host", s.host(vm)); err != nil {
 		return nil, nil, err
 	}
-	reqJSON, err := json.Marshal(req)
+	reqJSON, err := jsLiteral(req)
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err := vm.RunString("var __reqData = " + string(reqJSON) + ";"); err != nil {
+	if _, err := vm.RunString("var __reqData = " + reqJSON + ";"); err != nil {
 		return nil, nil, err
 	}
 	if res != nil {
@@ -335,6 +348,19 @@ func (s *Session) newVM(phase string, req *send.RequestData, res *Response) (*go
 }
 
 var errTimeout = errors.New("脚本执行超时")
+
+// jsLiteral marshals v as a JavaScript literal. U+2028 and U+2029 are
+// legal in JSON strings but end a line in older JavaScript parsers, so
+// they are escaped before splicing.
+func jsLiteral(v any) (string, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	s := strings.ReplaceAll(string(data), "\u2028", "\\u2028")
+	s = strings.ReplaceAll(s, "\u2029", "\\u2029")
+	return s, nil
+}
 
 // resData is the response object handed to the prelude: headers keyed
 // by lowercase name, repeated headers joined (set-cookie as an array).
@@ -480,8 +506,19 @@ func (s *Session) host(vm *goja.Runtime) map[string]any {
 			}
 		},
 		"sleep": func(ms float64) {
-			if ms > 0 {
-				time.Sleep(time.Duration(min(ms, float64(s.Timeout/time.Millisecond))) * time.Millisecond)
+			d := time.Duration(min(ms, float64(s.Timeout/time.Millisecond))) * time.Millisecond
+			if d <= 0 {
+				return
+			}
+			if s.Ctx == nil {
+				time.Sleep(d)
+				return
+			}
+			t := time.NewTimer(d)
+			defer t.Stop()
+			select {
+			case <-t.C:
+			case <-s.Ctx.Done():
 			}
 		},
 	}

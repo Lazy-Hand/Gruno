@@ -15,8 +15,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"gruno/bru"
+	"gruno/internal/script"
 	"gruno/internal/send"
 )
 
@@ -35,6 +38,17 @@ type Collection struct {
 	Proxy         send.ProxySettings
 	ClientCerts   []send.ClientCert
 	ClientCertsOn bool
+
+	DotCRLF bool // collection.bru uses CRLF line endings
+
+	// parseErrs maps a file's collection-relative path to its parse
+	// error. Such a file is never written back: the in-memory default
+	// would replace the user's content.
+	parseErrs map[string]string
+
+	envMu    sync.Mutex
+	dotEnv   map[string]string
+	dotEnvAt time.Time
 }
 
 // Folder is a directory inside the collection; Path is relative to the
@@ -44,7 +58,8 @@ type Folder struct {
 	Name string // display name; folder.bru meta.name wins over dirname
 	Seq  int
 	// Vars/Headers/Scripts come from the folder's folder.bru.
-	Bru *bru.CollectionBru
+	Bru     *bru.CollectionBru
+	BruCRLF bool // folder.bru uses CRLF line endings
 }
 
 // BruRequest is a parsed request .bru file plus its location.
@@ -53,6 +68,7 @@ type BruRequest struct {
 	Folder   string // containing directory relative to root, "" = root
 	FileName string
 	Req      *bru.Request
+	CRLF     bool // the file uses CRLF line endings
 }
 
 // brunoMeta is bruno.json: Bruno writes {"version","name","type","ignore"}.
@@ -76,7 +92,7 @@ func OpenCollection(root string) (*Collection, error) {
 		return nil, fmt.Errorf("%s 不是目录", root)
 	}
 
-	c := &Collection{Root: root, Dot: &bru.CollectionBru{Auth: "none"}}
+	c := &Collection{Root: root, Dot: &bru.CollectionBru{Auth: "none"}, parseErrs: map[string]string{}}
 
 	// bruno.json.
 	var meta brunoMeta
@@ -97,8 +113,11 @@ func OpenCollection(root string) (*Collection, error) {
 
 	// collection.bru.
 	if data, err := os.ReadFile(filepath.Join(root, "collection.bru")); err == nil {
+		c.DotCRLF = hasCRLF(data)
 		if cb, err := bru.ParseCollection(string(data)); err == nil {
 			c.Dot = cb
+		} else {
+			c.parseErrs["collection.bru"] = err.Error()
 		}
 	}
 
@@ -119,17 +138,23 @@ func OpenCollection(root string) (*Collection, error) {
 			case "environments", ".git", "node_modules", ".bru":
 				return filepath.SkipDir
 			}
-			if rel == "." || strings.HasPrefix(base, ".") {
+			if rel == "." {
 				return nil
+			}
+			if strings.HasPrefix(base, ".") {
+				return filepath.SkipDir
 			}
 			f := &Folder{Path: rel, Name: base}
 			if data, err := os.ReadFile(filepath.Join(path, "folder.bru")); err == nil {
+				f.BruCRLF = hasCRLF(data)
 				if cb, err := bru.ParseCollection(string(data)); err == nil {
 					f.Bru = cb
 					if cb.Meta.Name != "" {
 						f.Name = cb.Meta.Name
 					}
 					f.Seq = cb.Meta.Seq
+				} else {
+					c.parseErrs[rel+"/folder.bru"] = err.Error()
 				}
 			}
 			c.Folders = append(c.Folders, f)
@@ -148,14 +173,16 @@ func OpenCollection(root string) (*Collection, error) {
 		req, err := bru.ParseRequest(string(data))
 		if err != nil {
 			// Skip unreadable files rather than fail the whole collection;
-			// Bruno is forgiving the same way.
+			// Bruno is forgiving the same way. Remember why: the file is
+			// never overwritten from an empty in-memory request.
+			c.parseErrs[rel] = err.Error()
 			return nil
 		}
 		c.Requests = append(c.Requests, &BruRequest{
 			Path:     rel,
-			Folder:   filepath.ToSlash(filepath.Dir(rel)),
 			FileName: base,
 			Req:      req,
+			CRLF:     hasCRLF(data),
 		})
 		return nil
 	}); err != nil {
@@ -184,7 +211,10 @@ func OpenCollection(root string) (*Collection, error) {
 			}
 			name := strings.TrimSuffix(e.Name(), ".bru")
 			if env, err := bru.ParseEnvironment(string(data), name); err == nil {
+				env.CRLF = hasCRLF(data)
 				c.Environments = append(c.Environments, env)
+			} else {
+				c.parseErrs["environments/"+e.Name()] = err.Error()
 			}
 		}
 		sort.Slice(c.Environments, func(i, j int) bool { return c.Environments[i].Name < c.Environments[j].Name })
@@ -228,6 +258,25 @@ func CreateCollection(root, name string) (*Collection, error) {
 		return nil, err
 	}
 	return OpenCollection(root)
+}
+
+// hasCRLF reports whether data uses CRLF line endings.
+func hasCRLF(data []byte) bool { return strings.Contains(string(data), "\r\n") }
+
+// withLineEnding converts LF text to CRLF when the original file used it.
+func withLineEnding(text string, crlf bool) []byte {
+	if crlf {
+		text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+	}
+	return []byte(text)
+}
+
+// guardSave refuses to write a file whose parse failed on load.
+func (c *Collection) guardSave(rel string) error {
+	if msg, ok := c.parseErrs[rel]; ok {
+		return fmt.Errorf("%s 解析失败，为避免覆盖原文件已拒绝写入: %s", rel, msg)
+	}
+	return nil
 }
 
 // writeFileAtomic writes data to path via a sibling temp + rename.
@@ -313,7 +362,11 @@ func (c *Collection) nextSeq(folder string) int {
 
 // SaveRequest writes r.Req back to its file.
 func (c *Collection) SaveRequest(r *BruRequest) error {
-	return writeFileAtomic(filepath.Join(c.Root, filepath.FromSlash(r.Path)), []byte(bru.SerializeRequest(r.Req)))
+	if err := c.guardSave(r.Path); err != nil {
+		return err
+	}
+	data := withLineEnding(bru.SerializeRequest(r.Req), r.CRLF)
+	return writeFileAtomic(filepath.Join(c.Root, filepath.FromSlash(r.Path)), data)
 }
 
 // SaveCollectionBru writes collection.bru at the root of the collection.
@@ -321,7 +374,11 @@ func (c *Collection) SaveCollectionBru() error {
 	if c.Dot == nil {
 		return nil
 	}
-	return writeFileAtomic(filepath.Join(c.Root, "collection.bru"), []byte(bru.SerializeCollection(c.Dot)))
+	if err := c.guardSave("collection.bru"); err != nil {
+		return err
+	}
+	data := withLineEnding(bru.SerializeCollection(c.Dot), c.DotCRLF)
+	return writeFileAtomic(filepath.Join(c.Root, "collection.bru"), data)
 }
 
 // SaveFolderBru writes folder.bru for f.
@@ -329,7 +386,12 @@ func (c *Collection) SaveFolderBru(f *Folder) error {
 	if f == nil || f.Bru == nil {
 		return nil
 	}
-	return writeFileAtomic(filepath.Join(c.Root, filepath.FromSlash(f.Path), "folder.bru"), []byte(bru.SerializeCollection(f.Bru)))
+	rel := f.Path + "/folder.bru"
+	if err := c.guardSave(rel); err != nil {
+		return err
+	}
+	data := withLineEnding(bru.SerializeCollection(f.Bru), f.BruCRLF)
+	return writeFileAtomic(filepath.Join(c.Root, filepath.FromSlash(f.Path), "folder.bru"), data)
 }
 
 // RenameFolder updates the display name of f in folder.bru.
@@ -400,10 +462,10 @@ func (c *Collection) DeleteRequest(r *BruRequest) error {
 
 // CloneRequest duplicates r into the same folder.
 func (c *Collection) CloneRequest(r *BruRequest) (*BruRequest, error) {
-	dup := *r.Req
+	dup := r.Req.Clone()
 	dup.Meta.Name = r.Req.Meta.Name + " copy"
 	dup.Meta.Seq = c.nextSeq(r.Folder)
-	return c.writeNewRequest(r.Folder, &dup, "")
+	return c.writeNewRequest(r.Folder, dup, "")
 }
 
 // MoveRequest puts r into folder, rewriting its path.
@@ -485,7 +547,10 @@ func (c *Collection) SaveEnvironment(e *bru.Environment) error {
 		return err
 	}
 	path := filepath.Join(dir, bruFileName(e.Name))
-	return writeFileAtomic(path, []byte(bru.SerializeEnvironment(e)))
+	if err := c.guardSave("environments/" + bruFileName(e.Name)); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, withLineEnding(bru.SerializeEnvironment(e), e.CRLF))
 }
 
 // AddEnvironment creates a new empty environment.
@@ -524,26 +589,15 @@ func (c *Collection) folderByPath(rel string) *Folder {
 // for a request: collection vars, folder vars outermost→innermost,
 // environment vars, pre-request vars. Later wins.
 func (c *Collection) varScopes(r *BruRequest) []bru.Dict {
-	var dicts []bru.Dict
-	if c.Dot != nil {
-		dicts = append(dicts, c.Dot.Vars)
-	}
-	if r != nil && r.Folder != "" {
-		parts := strings.Split(r.Folder, "/")
-		for i := range parts {
-			f := c.folderByPath(strings.Join(parts[:i+1], "/"))
-			if f != nil && f.Bru != nil {
-				dicts = append(dicts, f.Bru.Vars)
-			}
-		}
-	}
-	for _, e := range c.Environments {
-		if e.Name == c.ActiveEnv {
-			dicts = append(dicts, e.Vars)
-		}
+	s := c.scopeSet(r)
+	dicts := make([]bru.Dict, 0, 2+len(s.folders))
+	dicts = append(dicts, s.collection)
+	dicts = append(dicts, s.folders...)
+	if s.env != nil {
+		dicts = append(dicts, s.env)
 	}
 	if r != nil {
-		dicts = append(dicts, r.Req.VarsPreRequest)
+		dicts = append(dicts, s.request)
 	}
 	return dicts
 }
@@ -566,6 +620,24 @@ func (c *Collection) collectionHeaders(r *BruRequest) []bru.Dict {
 		}
 	}
 	return dicts
+}
+
+// loadDotEnv returns the collection's .env over the OS environment,
+// re-reading only when the file's timestamp moved.
+func (c *Collection) loadDotEnv() map[string]string {
+	path := filepath.Join(c.Root, ".env")
+	var mod time.Time
+	if info, err := os.Stat(path); err == nil {
+		mod = info.ModTime()
+	}
+	c.envMu.Lock()
+	defer c.envMu.Unlock()
+	if c.dotEnv != nil && c.dotEnvAt.Equal(mod) {
+		return c.dotEnv
+	}
+	c.dotEnv = script.LoadDotEnv(path)
+	c.dotEnvAt = mod
+	return c.dotEnv
 }
 
 func mustRel(root, path string) string {
