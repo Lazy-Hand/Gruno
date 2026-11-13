@@ -39,6 +39,9 @@ type app struct {
 	tabs   map[string]*tabState
 	split  float32 // sidebar fraction
 	vsplit float32 // request pane percent, 0-100
+	// tabScroll is where the tab strip is scrolled; vertical wheel and
+	// trackpad moves scroll it sideways, with no scroll bar shown.
+	tabScroll ui.ScrollState
 
 	filter string
 	envSel string
@@ -1374,7 +1377,24 @@ func (a *app) workbench(c *ui.Context) {
 func (a *app) tabBar(c *ui.Context) {
 	t := c.Theme()
 	ui.Row(c).Gap(0).Padding(0, 4).BorderWidth(0, 0, 1, 0).BorderColor(t.Border).AlignItems(ui.Center).Children(func() {
-		ui.ScrollHorizontal(c).Grow(1).Children(func() {
+		ui.ScrollHorizontal(c).Grow(1).TrackScroll(&a.tabScroll).Scrollbars(false).
+			HandleInput(func(ev ui.InputEvent) bool {
+				// A wheel or a vertical two-finger move over the strip
+				// scrolls it sideways; horizontal gestures and drags are
+				// left to the container.
+				if ev.Kind != ui.InputScroll || ev.DX != 0 || ev.DY == 0 {
+					return false
+				}
+				x := a.tabScroll.X + ev.DY
+				if x < 0 {
+					x = 0
+				}
+				if a.tabScroll.MaxX > 0 && x > a.tabScroll.MaxX {
+					x = a.tabScroll.MaxX
+				}
+				a.tabScroll.X = x
+				return true
+			}).Children(func() {
 			ui.Row(c).Gap(2).AlignItems(ui.Center).Children(func() {
 				for _, tb := range a.open {
 					tb := tb

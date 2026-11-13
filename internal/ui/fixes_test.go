@@ -405,3 +405,37 @@ func TestTabBarHeightStableWithManyTabs(t *testing.T) {
 		t.Fatalf("tab bar grew with many tabs: y %.1f -> %.1f", base.Y, got.Y)
 	}
 }
+
+// The tab strip scrolls sideways with a wheel or a vertical trackpad move,
+// and shows no scroll bar to drag.
+func TestTabStripScrollsWithWheel(t *testing.T) {
+	a := openedApp(t)
+	for i := 0; i < 12; i++ {
+		r, err := a.coll.AddRequest("", fmt.Sprintf("%s %d", strings.Repeat("请求名称", 6), i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.openTab(r)
+	}
+	tt := ui.NewTester(a.view, 700, 700)
+	tt.Frame()
+	before, ok := tt.Find("关闭标签")
+	if !ok {
+		t.Fatalf("tab close button missing: %q", tt.Texts())
+	}
+	tt.Wheel(350, 15, 0, 120)
+	tt.Frame()
+	after, ok := tt.Find("关闭标签")
+	if !ok {
+		t.Fatal("tab close button missing after scroll")
+	}
+	if after.X >= before.X {
+		t.Fatalf("wheel did not scroll the tab strip: x %.1f -> %.1f", before.X, after.X)
+	}
+	tt.Wheel(350, 15, 0, -120)
+	tt.Frame()
+	back, _ := tt.Find("关闭标签")
+	if back.X < after.X {
+		t.Fatalf("wheel did not scroll back: x %.1f -> %.1f", after.X, back.X)
+	}
+}
