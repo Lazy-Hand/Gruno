@@ -1110,7 +1110,9 @@ func (a *app) sidebar(c *ui.Context) {
 		// Bruno collection header: icon, name, and action buttons.
 		hdr := ui.Row(c).Padding(4, 12).Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.Image(c, brunoLogoSVG).Size(18, 18)
-			ui.Text(c, a.coll.Name).Bold().FontSize(13).Grow(1)
+			// Grow(1) + MinWidth(0) lets a long collection name take the
+			// spare width and end in an ellipsis instead of wrapping.
+			ui.Text(c, a.coll.Name).Bold().FontSize(13).Grow(1).MinWidth(0).MaxLines(1)
 			addBtn := ui.Button(c, "").Padding(4, 6).Label("新建")
 			addBtn.Children(func() { ui.Icon(c, iconPlus).Size(14, 14) })
 			addBtn.Menu(a.collectionMenu)
@@ -1382,9 +1384,12 @@ func (a *app) tabBar(c *ui.Context) {
 					}
 					m := requestMethod(tb.Req)
 					isActive := tb.Path == a.active
-					el := ui.Row(c).Gap(5).Padding(6, 10).AlignItems(ui.Center).Radius(4, 4, 0, 0).Children(func() {
-						ui.Text(c, m).FontSize(10).Bold().TextColor(methodColor(t, m))
-						ui.Text(c, label).FontSize(12)
+					// Tabs keep their width inside the horizontal scroll
+					// (Shrink(0)) and long names end in an ellipsis, so a
+					// crowded tab bar stays one row high.
+					el := ui.Row(c).Gap(5).Padding(6, 10).AlignItems(ui.Center).Radius(4, 4, 0, 0).Shrink(0).Children(func() {
+						ui.Text(c, m).FontSize(10).Bold().TextColor(methodColor(t, m)).NoWrap()
+						ui.Text(c, label).FontSize(12).MaxLines(1).MaxWidth(220)
 						closeBtn := ui.ButtonBase(c.Key(tb.Path+"-x")).Padding(2, 2).Radius(3).Label("关闭标签")
 						closeBtn.Children(func() {
 							ui.Icon(c, iconX).Size(12, 12).TextColor(t.TextMuted)
@@ -1398,6 +1403,7 @@ func (a *app) tabBar(c *ui.Context) {
 					} else {
 						el.Background(t.Surface.Alpha(0.5))
 					}
+					el.Tooltip(label)
 					if el.Clicked() {
 						a.active = tb.Path
 					}

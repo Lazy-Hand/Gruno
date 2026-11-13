@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -355,5 +356,52 @@ func TestParseGuardSurfacesSaveError(t *testing.T) {
 	a.saveCollection()
 	if a.saveErr == "" {
 		t.Fatal("save error not surfaced")
+	}
+}
+
+// A long collection name ends in an ellipsis on one line.
+func TestLongCollectionNameStaysOneLine(t *testing.T) {
+	a := openedApp(t)
+	a.coll.Name = strings.Repeat("接口文档", 20)
+	tt := ui.NewTester(a.view, 1000, 700)
+	tt.Frame()
+	name, ok := tt.Find(a.coll.Name)
+	if !ok {
+		t.Fatalf("collection name not shown: %q", tt.Texts())
+	}
+	if name.H > 30 {
+		t.Fatalf("collection name wraps: height %v", name.H)
+	}
+}
+
+// Crowded tabs scroll sideways instead of stacking and stretching the
+// tab bar.
+func TestTabBarHeightStableWithManyTabs(t *testing.T) {
+	a := openedApp(t)
+	first, err := a.coll.AddRequest("", "R0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.openTab(first)
+	tt := ui.NewTester(a.view, 700, 700)
+	tt.Frame()
+	base, ok := tt.Find("关闭标签")
+	if !ok {
+		t.Fatalf("tab close button missing: %q", tt.Texts())
+	}
+	for i := 0; i < 20; i++ {
+		r, err := a.coll.AddRequest("", fmt.Sprintf("%s %d", strings.Repeat("请求名称", 6), i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.openTab(r)
+	}
+	tt.Frame()
+	got, ok := tt.Find("关闭标签")
+	if !ok {
+		t.Fatalf("tab close button missing after opening many tabs: %q", tt.Texts())
+	}
+	if got.Y > 40 || got.Y-base.Y > 2 {
+		t.Fatalf("tab bar grew with many tabs: y %.1f -> %.1f", base.Y, got.Y)
 	}
 }
